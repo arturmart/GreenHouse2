@@ -22,6 +22,6 @@ getData(key) մեթոդը ըստ տրված բանալու վերադարձնո�
 
 Այս լուծումը ապահովում է միասնական ինտերֆեյս տարբեր տեսակի սենսորների կամ տվյալների աղբյուրների համար և հեշտացնում է համակարգի ընդլայնումը՝ նոր ռազմավարություններ ավելացնելու միջոցով։
 
-![https://github.com/arturmart/GreenHouse2/blob/master/R%26D/dataCollector/dataCollectorArchetecture.png](dataCollectorArchetecture)
+![dataCollectorArchetecture](https://github.com/arturmart/GreenHouse2/blob/master/R%26D/dataCollector/dataCollectorArchetecture.png)
 
-Այս տեղ ել բերված է օրինակ [https://github.com/arturmart/GreenHouse2/blob/master/R%26D/dataCollector/dataCollector.cpp](dataCollectorSample)
+Այս տեղ ել բերված է օրինակ [dataCollectorSample](https://github.com/arturmart/GreenHouse2/blob/master/R%26D/dataCollector/dataCollector.cpp)
