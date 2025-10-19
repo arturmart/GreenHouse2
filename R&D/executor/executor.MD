@@ -8,3 +8,5 @@ Executor դասը գործում է որպես կառավարման շերտ։ �
 
 
 ![executorArchetecture](https://github.com/arturmart/GreenHouse2/blob/master/R%26D/executor/executorArchetecture.png)
+
+Այս տեղ ել բերված է օրինակ [https://github.com/arturmart/GreenHouse2/blob/master/R%26D/executor/executorSample.cpp](executorSample.cpp)
