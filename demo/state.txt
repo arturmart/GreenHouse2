@@ -1,0 +1,17 @@
+# GreenHouse2 global state init
+
+[executors]
+Bake=1,bool,true,auto
+Pump=2,int,0,manual
+Falcon1=3,bool,false,auto
+Cooler1=9,bool,true,auto
+Light1=11,double,0.75,auto
+
+[getters]
+date=string,2026-02-11 18:30:00
+dateDaily=string,2026-02-11
+temp=double,23.4
+temp2=double,22.9
+inBake=bool,true
+outBake=bool,false
+tempOut=double,-1.7
