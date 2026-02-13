@@ -49,7 +49,7 @@ int main() {
     dg.init(ctx);
 
     // ВАЖНО: 2 потока: один под sensor tick, один под HTTP ioc.run()
-    auto& sch = Scheduler::instance(2);
+    auto& sch = Scheduler::instance(4);
 
     // 1) Периодический сенсор
     sch.addPeriodic([&]() {
@@ -75,14 +75,15 @@ int main() {
     auto httpServer = std::make_shared<GH_HttpServer>(8080);
     httpServer->start();
 
+    std::cout << "HTTP server on http://localhost:8080\n";
+    std::cout << "GET /status\n";
+    std::cout << "GET /schema/getters\n";
+    std::cout << "GET /schema/executors\n";
+    std::cout << "GET /getters\n";
+    std::cout << "GET /getters/<key>\n";
+    std::cout << "GET /executors\n";
+
     sch.addDelayed([httpServer]() {
-        std::cout << "HTTP server on http://localhost:8080\n";
-        std::cout << "GET /status\n";
-        std::cout << "GET /schema/getters\n";
-        std::cout << "GET /schema/executors\n";
-        std::cout << "GET /getters\n";
-        std::cout << "GET /getters/<key>\n";
-        std::cout << "GET /executors\n";
         httpServer->run(); // BLOCKING
     }, Scheduler::Ms(0), "HTTP ioc.run()");
 
