@@ -2,44 +2,56 @@
 #include <thread>
 #include <chrono>
 
-#include "DataGetter.hpp"
-#include "RandomFloatStrategy.hpp"
 #include "GlobalState.hpp"
+#include "DataGetter.hpp"
+#include "DG_DS18B20.hpp"
 
 int main() {
-    using namespace dg;
 
-    std::cout << "=== DataGetter test ===\n";
+    // --- 1. Глобальное поле ---
+    Field<float> tempRoom;
 
-    // 1) Создаём менеджер
-    DataGetter getter;
+    // --- 2. DataGetter ---
+    dg::DataGetter dataGetter;
 
-    // 2) Добавляем стратегию
-    auto& strat = getter.emplace<RandomFloatStrategy>("rand");
+    // --- 3. Добавляем стратегию ---
+    // ID смотри через:
+    // ls /sys/bus/w1/devices/
+    // обычно 28-xxxxxxxxxxxx
 
-    // 3) Привязываем стратегию к глобальному стейту
-    auto& gs = GlobalState::instance();
-    strat.initRef(gs.dataGetter.randomNumber);
+    auto& ds = dataGetter.emplace<dg::DG_DS18B20>(
+        "room_temp",
+        "28-030397941733" 
+    );
 
-    // 4) Инициализируем (нам пока нечего передавать)
-    DataGetter::Ctx ctx;
-    getter.init(ctx);
+    // привязка к глобальному Field
+    ds.initRef(tempRoom);
 
-    // 5) Главный цикл
-    for (int i = 0; i < 10; i++) {
-        getter.tick();   // обновит gs.dataGetter.randomNumber
+    // init (если нужен ctx)
+    dataGetter.init({});
 
-        if (gs.dataGetter.randomNumber.valid) {
-            std::cout
-                << "Tick " << i
-                << " | Value = " << gs.dataGetter.randomNumber.value
-                << " | Valid = " << gs.dataGetter.randomNumber.valid
-                << "\n";
+    std::cout << "DataGetter started...\n";
+
+    // --- 4. Главный цикл ---
+    while (true) {
+        try {
+            dataGetter.tick();   // обновляет Field
+
+            if (tempRoom.isValid()) {
+                std::cout << "Temperature: "
+                          << tempRoom.get()
+                          << " °C\n";
+            }
+            else {
+                std::cout << "Temperature not valid\n";
+            }
+
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << "\n";
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::this_thread::sleep_for(std::chrono::seconds(2));
     }
 
-    std::cout << "=== Test completed ===\n";
     return 0;
 }
