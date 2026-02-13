@@ -1,5 +1,4 @@
 #pragma once
-
 #include <any>
 #include <cstdint>
 #include <stdexcept>
@@ -10,6 +9,9 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <vector>
+#include <shared_mutex>   // shared_mutex
+#include <chrono>
 
 enum class GH_MODE : uint8_t { MANUAL = 0, AUTO = 1 };
 
@@ -25,33 +27,44 @@ inline std::string toString(GH_MODE m) {
     return (m == GH_MODE::MANUAL) ? "MANUAL" : "AUTO";
 }
 
-// -----------------------------
-// Example config format (.txt)
-// -----------------------------
-// # comments allowed
-// [executors]
-// Bake=1,bool,true,auto
-// Pump=2,int,0,manual
-// Light1=10,double,0.75,auto
-//
-// [getters]
-// date=string,2026-02-11 12:30:00
-// temp=double,23.4
-// inBake=bool,true
-// tempOut=double,-2.1
-//
-// Types supported: bool, int, double, string
-// mode supported: manual/auto or 0/1
-//
-// -----------------------------
-
 class GH_GlobalState final {
 public:
-    using ExecValue  = std::any;
-    using ExecTuple  = std::tuple<ExecValue, GH_MODE>;
-    using ExecMap    = std::unordered_map<int, ExecTuple>;
+    // -------------------------
+    // Type schema
+    // -------------------------
+    enum class ValueType : uint8_t { BOOL, INT, DOUBLE, STRING };
+
+    static ValueType parseValueType(std::string s) {
+        s = toLower(trim(std::move(s)));
+        if (s == "bool")   return ValueType::BOOL;
+        if (s == "int")    return ValueType::INT;
+        if (s == "double") return ValueType::DOUBLE;
+        if (s == "string") return ValueType::STRING;
+        throw std::runtime_error("Unsupported type (bool/int/double/string): " + s);
+    }
+
+    // -------------------------
+    // Storage
+    // -------------------------
+    struct GetterEntry {
+        std::any  value;
+        bool      valid{false};
+        uint64_t  stampMs{0};   // когда обновили (ms)
+    };
+
+    struct ExecEntry {
+        std::any  value;
+        GH_MODE   mode{GH_MODE::MANUAL};
+        bool      valid{true};   // для executor обычно true, но можно использовать
+        uint64_t  stampMs{0};
+    };
+
+    using ExecMap    = std::unordered_map<int, ExecEntry>;
     using NameToId   = std::unordered_map<std::string, int>;
-    using GetterMap  = std::unordered_map<std::string, std::any>;
+    using GetterMap  = std::unordered_map<std::string, GetterEntry>;
+
+    using GetterSchema = std::unordered_map<std::string, ValueType>;
+    using ExecSchemaByName = std::unordered_map<std::string, ValueType>; // Bake -> BOOL, Pump -> INT ...
 
     static GH_GlobalState& instance() {
         static GH_GlobalState inst;
@@ -62,55 +75,121 @@ public:
     GH_GlobalState& operator=(const GH_GlobalState&) = delete;
 
     // -------------------------
-    // Accessors
+    // Time helper
     // -------------------------
-    ExecMap& executors() { return executor_status_; }
-    const ExecMap& executors() const { return executor_status_; }
-
-    GetterMap& getters() { return getter_status_; }
-    const GetterMap& getters() const { return getter_status_; }
-
-    NameToId& execNameToId() { return exec_name_to_id_; }
-    const NameToId& execNameToId() const { return exec_name_to_id_; }
+    static uint64_t nowMs() {
+        using namespace std::chrono;
+        return (uint64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    }
 
     // -------------------------
-    // Typed getter helpers
+    // ctx integration (передавать в стратегии)
     // -------------------------
-    template <class T>
+    using Ctx = std::unordered_map<std::string, std::any>;
+
+    // -------------------------
+    // Schema setup
+    // -------------------------
+    void setGetterSchema(const std::string& key, ValueType t) {
+        std::unique_lock lk(schema_mtx_);
+        getter_schema_[key] = t;
+    }
+    void setExecSchemaByName(const std::string& name, ValueType t) {
+        std::unique_lock lk(schema_mtx_);
+        exec_schema_by_name_[name] = t;
+    }
+
+    // -------------------------
+    // Read helpers (thread-safe)
+    // -------------------------
+    template<class T>
     T getGetterAs(const std::string& key) const {
+        std::shared_lock lk(getter_mtx_);
         auto it = getter_status_.find(key);
         if (it == getter_status_.end())
             throw std::runtime_error("Getter key not found: " + key);
-        return std::any_cast<T>(it->second);
+        if (!it->second.valid)
+            throw std::runtime_error("Getter key invalid: " + key);
+        return std::any_cast<T>(it->second.value);
     }
 
-    template <class T>
+    GetterEntry getGetterEntry(const std::string& key) const {
+        std::shared_lock lk(getter_mtx_);
+        auto it = getter_status_.find(key);
+        if (it == getter_status_.end())
+            throw std::runtime_error("Getter key not found: " + key);
+        return it->second; // копия
+    }
+
+    template<class T>
     T getExecValueAs(int id) const {
+        std::shared_lock lk(exec_mtx_);
         auto it = executor_status_.find(id);
         if (it == executor_status_.end())
             throw std::runtime_error("Executor id not found: " + std::to_string(id));
-        return std::any_cast<T>(std::get<0>(it->second));
+        if (!it->second.valid)
+            throw std::runtime_error("Executor id invalid: " + std::to_string(id));
+        return std::any_cast<T>(it->second.value);
     }
 
     GH_MODE getExecMode(int id) const {
+        std::shared_lock lk(exec_mtx_);
         auto it = executor_status_.find(id);
         if (it == executor_status_.end())
             throw std::runtime_error("Executor id not found: " + std::to_string(id));
-        return std::get<1>(it->second);
+        return it->second.mode;
+    }
+
+    int execIdByName(const std::string& name) const {
+        std::shared_lock lk(exec_mtx_);
+        auto it = exec_name_to_id_.find(name);
+        if (it == exec_name_to_id_.end())
+            throw std::runtime_error("Executor name not found: " + name);
+        return it->second;
+    }
+
+    // -------------------------
+    // Write helpers (thread-safe)
+    // -------------------------
+    void setGetter(const std::string& key, std::any value) {
+        // мягкие ошибки сенсора: setGetterInvalid отдельным методом
+        validateGetterTypeOrThrow_(key, value);
+
+        std::unique_lock lk(getter_mtx_);
+        auto& e = getter_status_[key];
+        e.value   = std::move(value);
+        e.valid   = true;
+        e.stampMs = nowMs();
+    }
+
+    void setGetterInvalid(const std::string& key) {
+        std::unique_lock lk(getter_mtx_);
+        auto& e = getter_status_[key];
+        e.valid   = false;
+        e.stampMs = nowMs();
     }
 
     void setExec(int id, std::any value, GH_MODE mode) {
-        executor_status_[id] = std::make_tuple(std::move(value), mode);
+        // executors обычно приходят от executor логики -> тоже можно проверять по schema
+        // но schema по имени (Bake/Pump). Если есть id->name — можно расширить.
+        std::unique_lock lk(exec_mtx_);
+        auto& e = executor_status_[id];
+        e.value   = std::move(value);
+        e.mode    = mode;
+        e.valid   = true;
+        e.stampMs = nowMs();
     }
 
-    void setGetter(const std::string& key, std::any value) {
-        getter_status_[key] = std::move(value);
+    void setExecInvalid(int id) {
+        std::unique_lock lk(exec_mtx_);
+        auto& e = executor_status_[id];
+        e.valid   = false;
+        e.stampMs = nowMs();
     }
 
     // -------------------------
-    // Load from txt config
+    // Load from txt config (config errors = фатально)
     // -------------------------
-    // Returns true if loaded, false if file can't be opened.
     bool loadFromTxt(const std::string& path) {
         std::ifstream in(path);
         if (!in.is_open()) return false;
@@ -127,42 +206,38 @@ public:
             if (isSection(line, "getters"))   { sec = Section::GETTERS;   continue; }
 
             switch (sec) {
-                case Section::EXECUTORS:
-                    parseExecutorLine(line);
-                    break;
-                case Section::GETTERS:
-                    parseGetterLine(line);
-                    break;
-                default:
-                    // ignore lines outside sections
-                    break;
+                case Section::EXECUTORS: parseExecutorLine(line); break;
+                case Section::GETTERS:   parseGetterLine(line);   break;
+                default: break;
             }
         }
-
         return true;
     }
 
 private:
     GH_GlobalState() {
-        // Optional: pre-register names/IDs you listed (can be overwritten by config).
-        // You can change IDs as you want.
         registerDefaultExecutors_();
         registerDefaultGetters_();
+        registerDefaultSchema_();
     }
 
     // -------------------------
-    // Internal storage
+    // Internal storage + mutexes
     // -------------------------
-    ExecMap   executor_status_;                // id -> (any value, mode)
-    NameToId  exec_name_to_id_;                // "Bake" -> 1
-    GetterMap getter_status_;                  // "temp" -> any
+    mutable std::shared_mutex exec_mtx_;
+    mutable std::shared_mutex getter_mtx_;
+    mutable std::shared_mutex schema_mtx_;
+
+    ExecMap   executor_status_;   // id -> ExecEntry
+    NameToId  exec_name_to_id_;   // name -> id
+    GetterMap getter_status_;     // key -> GetterEntry
+
+    GetterSchema     getter_schema_;
+    ExecSchemaByName exec_schema_by_name_;
 
     // -------------------------
     // Parsing
     // -------------------------
-    // executors line:
-    // Name=ID,type,value,mode
-    // Example: Bake=1,bool,true,auto
     void parseExecutorLine(const std::string& line) {
         auto eq = line.find('=');
         if (eq == std::string::npos)
@@ -171,32 +246,30 @@ private:
         std::string name = trim(line.substr(0, eq));
         std::string rhs  = trim(line.substr(eq + 1));
 
-        // Split rhs by ',': ID, type, value, mode
         auto parts = split(rhs, ',');
         if (parts.size() < 4)
             throw std::runtime_error("Executors line must be: Name=ID,type,value,mode : " + line);
 
         int id = parseInt(trim(parts[0]));
-        std::string type = toLower(trim(parts[1]));
-        std::string valueStr = trim(joinRest(parts, 2, parts.size() - 2)); // keep value with commas if any
-        // But we used joinRest to allow string values with commas (rare). Then last token is mode.
-        // Because of joinRest, we need to re-split smarter:
-        // Simpler: assume no commas in value. If you need commas in string, we can add quotes support later.
-        // For now: interpret parts[2] as value, parts[3] as mode.
-        valueStr = trim(parts[2]);
-        std::string modeStr = toLower(trim(parts[3]));
+        std::string typeStr  = toLower(trim(parts[1]));
+        std::string valueStr = trim(parts[2]);
+        std::string modeStr  = toLower(trim(parts[3]));
 
         GH_MODE mode = parseMode(modeStr);
+        ValueType vt = parseValueType(typeStr);
 
-        std::any val = parseAny(type, valueStr);
+        // schema check: если schema задана — проверяем
+        validateExecSchemaOrThrow_(name, vt);
 
-        exec_name_to_id_[name] = id;
-        executor_status_[id] = std::make_tuple(std::move(val), mode);
+        std::any val = parseAny(vt, valueStr);
+
+        {
+            std::unique_lock lk(exec_mtx_);
+            exec_name_to_id_[name] = id;
+            executor_status_[id] = ExecEntry{ std::move(val), mode, true, nowMs() };
+        }
     }
 
-    // getters line:
-    // key=type,value
-    // Example: temp=double,23.4
     void parseGetterLine(const std::string& line) {
         auto eq = line.find('=');
         if (eq == std::string::npos)
@@ -209,12 +282,17 @@ private:
         if (parts.size() < 2)
             throw std::runtime_error("Getters line must be: key=type,value : " + line);
 
-        std::string type = toLower(trim(parts[0]));
+        ValueType vt = parseValueType(parts[0]);
         std::string valueStr = trim(joinRest(parts, 1, parts.size() - 1));
-        // (same note: if you need commas in string, we can add quotes later)
 
-        std::any val = parseAny(type, valueStr);
-        getter_status_[key] = std::move(val);
+        validateGetterSchemaOrThrow_(key, vt);
+
+        std::any val = parseAny(vt, valueStr);
+
+        {
+            std::unique_lock lk(getter_mtx_);
+            getter_status_[key] = GetterEntry{ std::move(val), true, nowMs() };
+        }
     }
 
     static GH_MODE parseMode(const std::string& s) {
@@ -223,60 +301,109 @@ private:
         throw std::runtime_error("Invalid mode (manual/auto or 0/1): " + s);
     }
 
-    static std::any parseAny(const std::string& type, const std::string& value) {
-        if (type == "bool")   return std::any(parseBool(value));
-        if (type == "int")    return std::any(parseInt(value));
-        if (type == "double") return std::any(parseDouble(value));
-        if (type == "string") return std::any(value);
-        throw std::runtime_error("Unsupported type (bool/int/double/string): " + type);
+    static std::any parseAny(ValueType t, const std::string& value) {
+        switch (t) {
+            case ValueType::BOOL:   return std::any(parseBool(value));
+            case ValueType::INT:    return std::any(parseInt(value));
+            case ValueType::DOUBLE: return std::any(parseDouble(value));
+            case ValueType::STRING: return std::any(value);
+        }
+        throw std::runtime_error("parseAny: unreachable");
     }
 
     // -------------------------
-    // Defaults (optional)
+    // Defaults + schema
     // -------------------------
     void registerDefaultExecutors_() {
-        // IDs are examples. Change to your real mapping.
         const std::pair<const char*, int> defs[] = {
-            {"Bake", 1},
-            {"Pump", 2},
-            {"Falcon1", 3},
-            {"Falcon2", 4},
-            {"Falcon3", 5},
-            {"Falcon4", 6},
-            {"IR1", 7},
-            {"IR2", 8},
-            {"Cooler1", 9},
-            {"Cooler2", 10},
+            {"Bake", 1}, {"Pump", 2},
+            {"Falcon1", 3}, {"Falcon2", 4}, {"Falcon3", 5}, {"Falcon4", 6},
+            {"IR1", 7}, {"IR2", 8},
+            {"Cooler1", 9}, {"Cooler2", 10},
             {"Light1", 11},
         };
 
+        std::unique_lock lk(exec_mtx_);
         for (auto& p : defs) {
             exec_name_to_id_[p.first] = p.second;
-            // default value=false, mode=MANUAL
-            executor_status_[p.second] = std::make_tuple(std::any(false), GH_MODE::MANUAL);
+            executor_status_[p.second] = ExecEntry{ std::any(false), GH_MODE::MANUAL, true, nowMs() };
         }
     }
 
     void registerDefaultGetters_() {
-        const char* keys[] = {
-            "date", "dateDaily", "temp", "temp2",
-            "inBake", "outBake", "tempOut"
-        };
+        const char* keys[] = { "date","dateDaily","temp","temp2","inBake","outBake","tempOut" };
 
+        std::unique_lock lk(getter_mtx_);
         for (auto* k : keys) {
-            // default empty string for date, 0.0 for temps, false for in/out flags.
             std::string ks(k);
-            if (ks == "date" || ks == "dateDaily")
-                getter_status_[ks] = std::any(std::string{});
-            else if (ks.rfind("temp", 0) == 0)
-                getter_status_[ks] = std::any(0.0);
-            else
-                getter_status_[ks] = std::any(false);
+            GetterEntry e;
+            e.valid = false; // важно: до первого чтения сенсора считаем invalid
+            e.stampMs = nowMs();
+
+            if (ks == "date" || ks == "dateDaily") e.value = std::string{};
+            else if (ks.rfind("temp", 0) == 0)     e.value = 0.0;
+            else                                   e.value = false;
+
+            getter_status_[ks] = std::move(e);
+        }
+    }
+
+    void registerDefaultSchema_() {
+        // getters schema
+        std::unique_lock lk(schema_mtx_);
+        getter_schema_["date"]      = ValueType::STRING;
+        getter_schema_["dateDaily"] = ValueType::STRING;
+        getter_schema_["temp"]      = ValueType::DOUBLE;
+        getter_schema_["temp2"]     = ValueType::DOUBLE;
+        getter_schema_["tempOut"]   = ValueType::DOUBLE;
+        getter_schema_["inBake"]    = ValueType::BOOL;
+        getter_schema_["outBake"]   = ValueType::BOOL;
+
+        // executors schema (пример, ты сам задаёшь)
+        exec_schema_by_name_["Bake"]    = ValueType::BOOL;
+        exec_schema_by_name_["Pump"]    = ValueType::INT;    // или BOOL — как у тебя реально
+        exec_schema_by_name_["Light1"]  = ValueType::DOUBLE; // например pwm
+        // Остальные добавишь по мере надобности
+    }
+
+    // -------------------------
+    // Schema validation
+    // -------------------------
+    void validateGetterSchemaOrThrow_(const std::string& key, ValueType got) const {
+        std::shared_lock lk(schema_mtx_);
+        auto it = getter_schema_.find(key);
+        if (it == getter_schema_.end()) return; // если нет в схеме — разрешаем (можно сделать строго)
+        if (it->second != got) {
+            throw std::runtime_error("Getter schema type mismatch for key=" + key);
+        }
+    }
+
+    void validateExecSchemaOrThrow_(const std::string& name, ValueType got) const {
+        std::shared_lock lk(schema_mtx_);
+        auto it = exec_schema_by_name_.find(name);
+        if (it == exec_schema_by_name_.end()) return;
+        if (it->second != got) {
+            throw std::runtime_error("Executor schema type mismatch for name=" + name);
+        }
+    }
+
+    void validateGetterTypeOrThrow_(const std::string& key, const std::any& v) const {
+        // Это runtime check по any::type() (мягко). Схема строже через ValueType.
+        std::shared_lock lk(schema_mtx_);
+        auto it = getter_schema_.find(key);
+        if (it == getter_schema_.end()) return;
+
+        const std::type_info& ti = v.type();
+        switch (it->second) {
+            case ValueType::BOOL:   if (ti != typeid(bool))   throw std::runtime_error("Getter type mismatch: " + key); break;
+            case ValueType::INT:    if (ti != typeid(int))    throw std::runtime_error("Getter type mismatch: " + key); break;
+            case ValueType::DOUBLE: if (ti != typeid(double)) throw std::runtime_error("Getter type mismatch: " + key); break;
+            case ValueType::STRING: if (ti != typeid(std::string)) throw std::runtime_error("Getter type mismatch: " + key); break;
         }
     }
 
     // -------------------------
-    // Utils
+    // Utils (как у тебя)
     // -------------------------
     static std::string stripComment(const std::string& s) {
         auto pos = s.find('#');
@@ -310,7 +437,6 @@ private:
     }
 
     static std::string joinRest(const std::vector<std::string>& parts, size_t start, size_t count) {
-        // joins parts[start .. start+count-1] with ','
         std::string out;
         for (size_t i = 0; i < count; ++i) {
             if (i) out += ",";

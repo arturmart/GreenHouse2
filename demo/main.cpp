@@ -1,115 +1,103 @@
-#include "SIM/HeatGrid.hpp"
-#include "SIM/HeatSimAdapter.hpp"
-#include "SIM/sim_scene.hpp"
-#include "SIM/SIM_monitor.hpp"            // для ansi_* (если нужно)
-
-#include "Executor/Executor.hpp"
-#include "Executor/Executor_Strategy_SIM.hpp"
-
-#include "Scheduler/Scheduler.hpp"        // твой планировщик
-#include "Scheduler/Scheduler_monitor.hpp"// TerminalMonitor (монитор шедулера)
-
-#include <csignal>
-#include <atomic>
-#include <chrono>
-#include <thread>
+// main.cpp
 #include <iostream>
-#include <mutex>
+#include <thread>
+#include <chrono>
+#include <csignal>
 
-using namespace std::chrono_literals;
-using namespace exec;
+#include "GlobalState.hpp"
+#include "Scheduler/Scheduler.hpp"
+#include "DataGetter/DataGetter.hpp"
+#include "DataGetter/DG_DS18B20.hpp"
 
-static std::atomic<bool> g_stop{false};
-static void install_signal_handlers(){
-    std::signal(SIGINT,  [](int){ g_stop = true; });
-    std::signal(SIGTERM, [](int){ g_stop = true; });
+// ------------------------------------------------------------
+// Adapter: Field<T> -> writes into GH_GlobalState (getter map)
+// ------------------------------------------------------------
+template<typename T>
+struct Field {
+    explicit Field(std::string key) : key_(std::move(key)) {}
+
+    void set(const T& v) {
+        // DS18B20 отдаёт float, но у тебя в schema temp=temp2=tempOut -> DOUBLE
+        // Поэтому кладём как double, чтобы не словить mismatch.
+        if constexpr (std::is_same_v<T, float>) {
+            GH_GlobalState::instance().setGetter(key_, static_cast<double>(v));
+        } else {
+            GH_GlobalState::instance().setGetter(key_, v);
+        }
+    }
+
+private:
+    std::string key_;
+};
+
+// ------------------------------------------------------------
+
+static volatile std::sig_atomic_t g_run = 1;
+
+static void onSigInt(int) {
+    g_run = 0;
 }
 
-int main(){
-    install_signal_handlers();
+int main() {
+    std::signal(SIGINT, onSigInt);
 
-    // 1) Конфиг сцены
-    SceneConfig cfg;
-    cfg.rows = 16; cfg.cols = 16;
-    cfg.refresh_ms = 80; cfg.cellw = 4; cfg.Tmin = 0.0; cfg.Tmax = 80.0;
-    cfg.substeps = 6; cfg.dt_base = 0.1; cfg.speed_mult = 3.0;
+    // 1) GlobalState already has defaults in ctor (executors/getters/schema).
+    auto& gs = GH_GlobalState::instance();
 
-    cfg.part_col = cfg.cols/3; cfg.part_r0 = 3; cfg.part_r1 = cfg.rows-4;
-    cfg.sensor_r = cfg.rows/2; cfg.sensor_c = cfg.cols - cfg.cols/4;
-    { int hr = cfg.rows/2, hc = cfg.cols/3 + 2;
-      cfg.heaters = {{hr,hc},{hr,hc+1},{hr,hc-1}}; }
+    // 2) DataGetter + стратегия DS18B20
+    dg::DataGetter dg;
 
-    // 2) Сетка + сцена
-    HeatGrid grid(cfg.rows, cfg.cols);
-    SceneState st = build_scene(grid, cfg);
+    // !!! ВПИШИ СВОЙ ID ДАТЧИКА (пример):
+    // ls /sys/bus/w1/devices/  -> увидишь что-то типа 28-00000abcdef0
+    const std::string sensorId = "28-030397941733";
 
-    // 3) ISimControl + Executor
-    HeatSimAdapter heater(250.0);
-    Executor ex;
-    ex.registerCommand("SIM_HEAT", std::make_unique<ExecutorStrategySIM>());
-    AExecutorStrategy::Ctx ctx; ctx["sim"] = (ISimControl*)&heater; ex.initAll(ctx);
+    auto& ds = dg.emplace<dg::DG_DS18B20>("temp_ds18b20", sensorId);
 
-    // 4) Scheduler
-    auto& sched = Scheduler::instance(4);     // 1 поток — меньше конфликтов вывода
-    std::mutex sim_mtx;                       // пригодится, если увеличишь потоки
+    // 3) Привязка стратегии к "Field<float>" (который будет писать в GlobalState key="temp")
+    Field<float> tempField("temp");
+    ds.initRef(tempField);
 
-    
-    constexpr int TOP_ROWS = 10;
+    // 4) init() всем стратегиям (если нужно через ctx — дополни)
+    dg::ADataGetterStrategyBase::Ctx ctx;
+    dg.init(ctx);
 
-    // Старый конструктор: 3 аргумента
-    TerminalMonitor mon(200ms, /*historyCols=*/40, /*colWidth=*/3);
-    // mon.setWindow(1, TOP_ROWS);  // <-- УДАЛИ/закомментируй ЭТУ СТРОКУ
-    mon.start(sched);
+    // 5) Scheduler: 1 поток в пуле (как ты просил)
+    auto& sch = Scheduler::instance(1);
 
-    const int SIM_ROW_OFF = TOP_ROWS + 1; // можешь оставить как есть для SIM
+    // 6) Периодическая задача: читаем датчик -> сохраняем -> печатаем
+    sch.addPeriodic([&]() {
+        try {
+            dg.tick(); // ds.tick() -> getDataRef() -> Field<float>::set() -> GlobalState.setGetter("temp", double)
 
+            auto e = gs.getGetterEntry("temp");
+            double t = std::any_cast<double>(e.value);
 
-    
+            std::cout << "[DG] temp=" << t
+                      << " valid=" << std::boolalpha << e.valid
+                      << " stampMs=" << e.stampMs
+                      << "\n";
+        } catch (const std::exception& ex) {
+            // Мягкая ошибка сенсора: помечаем invalid и печатаем причину
+            gs.setGetterInvalid("temp");
+            auto e = gs.getGetterEntry("temp");
 
-    // 6) Периодические задачи
-
-    // Toggle печи раз в 1500 мс
-    auto idToggle = sched.addPeriodic([&]{
-        static bool state = false;
-        ex.enqueue("SIM_HEAT", 0, state);
-        state = !state;
-        std::this_thread::sleep_for(50ms); // For SIM
-    }, 1500ms, "ToggleHeater");
-
-    // Executor::tick
-    auto idExec = sched.addPeriodic([&]{
-        ex.tick();
-        std::this_thread::sleep_for(50ms); // For SIM
-    }, 100ms, "ExecutorTick");
-
-    
-
-    simmon::ansi_hidecur();
-    simmon::clear_box(1, TOP_ROWS + 1 + cfg.rows + 2); // верх+нижняя область
-
-   
-    // Задача физики + рендер:
-    auto idPhysRender = sched.addPeriodic([&]{
-        std::this_thread::sleep_for(50ms); // For SIM
-        for (int k=0; k<cfg.substeps; ++k){
-            sim_substep(grid, st, heater.isEnabled(), heater.getPower());
+            std::cout << "[DG] temp=INVALID"
+                      << " valid=" << std::boolalpha << e.valid
+                      << " stampMs=" << e.stampMs
+                      << " err=" << ex.what()
+                      << "\n";
         }
-        draw_hud_at(grid, cfg, st, heater.isEnabled(), heater.getPower(), /*row_off=*/SIM_ROW_OFF);
-        draw_grid_at(grid, cfg, /*row_off=*/SIM_ROW_OFF);
-    }, std::chrono::milliseconds(cfg.refresh_ms), "PhysAndRender");
+    }, Scheduler::Ms(1000), "DG_DS18B20->GlobalState(temp)");
 
-    // 7) Главный поток ждёт сигнал
-    while (!g_stop.load()) std::this_thread::sleep_for(100ms);
+    std::cout << "Running. Press Ctrl+C to stop.\n";
 
-    // 8) Завершение
-    mon.stop();
-    sched.cancel(idToggle);
-    sched.cancel(idExec);
-    sched.cancel(idPhysRender);
-    sched.stop();
+    // 7) main thread просто живёт, пока Ctrl+C
+    while (g_run) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
 
-    simmon::ansi_showcur();
-    simmon::ansi_reset();
-    std::cout << "\n[SIM] stopped.\n";
+    // 8) graceful stop
+    sch.stop();
+    std::cout << "Stopped.\n";
     return 0;
 }
