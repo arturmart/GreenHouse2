@@ -147,6 +147,54 @@ public:
             throw std::runtime_error("Executor name not found: " + name);
         return it->second;
     }
+    // -------------------------
+    // Snapshots for API (thread-safe copies)
+    // -------------------------
+    GetterSchema snapshotGetterSchema() const {
+        std::shared_lock lk(schema_mtx_);
+        return getter_schema_;
+    }
+
+    ExecSchemaByName snapshotExecSchemaByName() const {
+        std::shared_lock lk(schema_mtx_);
+        return exec_schema_by_name_;
+    }
+
+    GetterMap snapshotGetters() const {
+        std::shared_lock lk(getter_mtx_);
+        return getter_status_;
+    }
+
+    struct ExecApiEntry {
+        int id;
+        std::string name;   // может быть пустым, если не найдено
+        ExecEntry entry;
+    };
+
+    std::vector<ExecApiEntry> snapshotExecutors() const {
+        std::shared_lock lk(exec_mtx_);
+
+        // id -> name
+        std::unordered_map<int, std::string> id2name;
+        id2name.reserve(exec_name_to_id_.size());
+        for (const auto& kv : exec_name_to_id_) {
+            id2name[kv.second] = kv.first;
+        }
+
+        std::vector<ExecApiEntry> out;
+        out.reserve(executor_status_.size());
+
+        for (const auto& kv : executor_status_) {
+            int id = kv.first;
+            ExecApiEntry e;
+            e.id = id;
+            auto it = id2name.find(id);
+            if (it != id2name.end()) e.name = it->second;
+            e.entry = kv.second; // копия
+            out.push_back(std::move(e));
+        }
+        return out;
+    }
 
     // -------------------------
     // Write helpers (thread-safe)
@@ -220,11 +268,7 @@ public:
 
 
 private:
-    GH_GlobalState() {
-        registerDefaultExecutors_();
-        registerDefaultGetters_();
-        registerDefaultSchema_();
-    }
+    GH_GlobalState() = default;
 
     // -------------------------
     // Internal storage + mutexes
