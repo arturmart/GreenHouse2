@@ -43,15 +43,16 @@ int main() {
 
     // 1) GlobalState already has defaults in ctor (executors/getters/schema).
     auto& gs = GH_GlobalState::instance();
-
+    if (!gs.loadFromTxt("DG_EXE_CONFIG.txt")) {
+        std::cerr << "Failed to load config.txt\n";
+        return 1;
+    }
     // 2) DataGetter + стратегия DS18B20
     dg::DataGetter dg;
 
-    // !!! ВПИШИ СВОЙ ID ДАТЧИКА (пример):
-    // ls /sys/bus/w1/devices/  -> увидишь что-то типа 28-00000abcdef0
-    const std::string sensorId = "28-030397941733";
 
-    auto& ds = dg.emplace<dg::DG_DS18B20>("temp_ds18b20", sensorId);
+
+    auto& ds = dg.emplace<dg::DG_DS18B20>("temp_ds18b20", "28-030397941733");
 
     // 3) Привязка стратегии к "Field<float>" (который будет писать в GlobalState key="temp")
     Field<float> tempField("temp");

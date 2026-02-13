@@ -1,0 +1,19 @@
+[schema_getters]
+temp=double
+temp2=double
+date=string
+
+[schema_executors]
+Bake=bool
+Pump=int
+Light1=double
+
+[executors]
+Bake=1,bool,false,manual
+Pump=2,int,0,manual
+Light1=11,double,0.0,auto
+
+[getters]
+temp=double,0.0
+temp2=double,0.0
+date=string,2026-02-13 21:00

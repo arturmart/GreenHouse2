@@ -194,7 +194,7 @@ public:
         std::ifstream in(path);
         if (!in.is_open()) return false;
 
-        enum class Section { NONE, EXECUTORS, GETTERS };
+        enum class Section { NONE, SCHEMA_GETTERS, SCHEMA_EXECUTORS, EXECUTORS, GETTERS };
         Section sec = Section::NONE;
 
         std::string line;
@@ -202,17 +202,22 @@ public:
             line = trim(stripComment(line));
             if (line.empty()) continue;
 
-            if (isSection(line, "executors")) { sec = Section::EXECUTORS; continue; }
-            if (isSection(line, "getters"))   { sec = Section::GETTERS;   continue; }
+            if (isSection(line, "schema_getters"))   { sec = Section::SCHEMA_GETTERS;   continue; }
+            if (isSection(line, "schema_executors")) { sec = Section::SCHEMA_EXECUTORS; continue; }
+            if (isSection(line, "executors"))        { sec = Section::EXECUTORS;        continue; }
+            if (isSection(line, "getters"))          { sec = Section::GETTERS;          continue; }
 
             switch (sec) {
-                case Section::EXECUTORS: parseExecutorLine(line); break;
-                case Section::GETTERS:   parseGetterLine(line);   break;
+                case Section::SCHEMA_GETTERS:   parseSchemaGetterLine(line);   break;
+                case Section::SCHEMA_EXECUTORS: parseSchemaExecutorLine(line); break;
+                case Section::EXECUTORS:        parseExecutorLine(line);       break;
+                case Section::GETTERS:          parseGetterLine(line);         break;
                 default: break;
             }
         }
         return true;
     }
+
 
 private:
     GH_GlobalState() {
@@ -238,6 +243,30 @@ private:
     // -------------------------
     // Parsing
     // -------------------------
+    void parseSchemaGetterLine(const std::string& line) {
+        auto eq = line.find('=');
+        if (eq == std::string::npos)
+            throw std::runtime_error("schema_getters line must be: key=type : " + line);
+
+        std::string key = trim(line.substr(0, eq));
+        std::string t   = trim(line.substr(eq + 1));
+
+        ValueType vt = parseValueType(t);
+        setGetterSchema(key, vt);
+    }
+
+    void parseSchemaExecutorLine(const std::string& line) {
+        auto eq = line.find('=');
+        if (eq == std::string::npos)
+            throw std::runtime_error("schema_executors line must be: name=type : " + line);
+
+        std::string name = trim(line.substr(0, eq));
+        std::string t    = trim(line.substr(eq + 1));
+
+        ValueType vt = parseValueType(t);
+        setExecSchemaByName(name, vt);
+    }
+
     void parseExecutorLine(const std::string& line) {
         auto eq = line.find('=');
         if (eq == std::string::npos)
