@@ -17,6 +17,15 @@ using tcp = asio::ip::tcp;
 
 // -------------------------- JSON HELPERS --------------------------
 
+//web
+static std::string readFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) throw std::runtime_error("Failed to open file: " + path);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
 static inline std::string jescape(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -245,6 +254,35 @@ handle_request(http::request<http::string_body>&& req) {
         out += "]";
         return make_json(req, http::status::ok, out);
     }
+
+    //web
+    if (req.method() == http::verb::get && target == "/") {
+      try {
+         auto html = readFile("API/web/index.html");
+         http::response<http::string_body> res{http::status::ok, req.version()};
+         res.set(http::field::content_type, "text/html; charset=utf-8");
+         res.keep_alive(req.keep_alive());
+         res.body() = html;
+         res.prepare_payload();
+         return res;
+      } catch (const std::exception& ex) {
+         return make_text(req, http::status::internal_server_error, ex.what());
+      }
+   }
+
+   if (req.method() == http::verb::get && target == "/app.js") {
+      try {
+         auto js = readFile("API/web/app.js");
+         http::response<http::string_body> res{http::status::ok, req.version()};
+         res.set(http::field::content_type, "application/javascript; charset=utf-8");
+         res.keep_alive(req.keep_alive());
+         res.body() = js;
+         res.prepare_payload();
+         return res;
+      } catch (const std::exception& ex) {
+         return make_text(req, http::status::internal_server_error, ex.what());
+      }
+   }
 
     // POST endpoints можно включить позже (когда решим политику безопасности записи)
     return make_text(req, http::status::not_found, "Not found");
