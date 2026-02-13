@@ -75,6 +75,7 @@ w1_bus_master1  28-XXXXXXXXXXXX
 
 |ID|For                        | Name |
 |--|--                        | --|
+|28-030397941733| test 1 | test temp|
 |28-0303979402d4| main | temp|
 |28-030397942cf4| secondory|temp2|
 |28-030397946349| input Bake |inBake|
