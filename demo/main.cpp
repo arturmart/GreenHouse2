@@ -8,6 +8,7 @@
 #include "Scheduler/Scheduler.hpp"
 #include "DataGetter/DataGetter.hpp"
 #include "DataGetter/DG_DS18B20.hpp"
+#include "API/HttpServer.hpp"
 
 // ------------------------------------------------------------
 // Adapter: Field<T> -> writes into GH_GlobalState (getter map)
@@ -15,89 +16,83 @@
 template<typename T>
 struct Field {
     explicit Field(std::string key) : key_(std::move(key)) {}
-
     void set(const T& v) {
-        // DS18B20 отдаёт float, но у тебя в schema temp=temp2=tempOut -> DOUBLE
-        // Поэтому кладём как double, чтобы не словить mismatch.
         if constexpr (std::is_same_v<T, float>) {
             GH_GlobalState::instance().setGetter(key_, static_cast<double>(v));
         } else {
             GH_GlobalState::instance().setGetter(key_, v);
         }
     }
-
 private:
     std::string key_;
 };
 
-// ------------------------------------------------------------
-
 static volatile std::sig_atomic_t g_run = 1;
-
-static void onSigInt(int) {
-    g_run = 0;
-}
+static void onSigInt(int) { g_run = 0; }
 
 int main() {
     std::signal(SIGINT, onSigInt);
 
-    // 1) GlobalState already has defaults in ctor (executors/getters/schema).
     auto& gs = GH_GlobalState::instance();
     if (!gs.loadFromTxt("DG_EXE_CONFIG.txt")) {
-        std::cerr << "Failed to load config.txt\n";
+        std::cerr << "Failed to load DG_EXE_CONFIG.txt\n";
         return 1;
     }
-    // 2) DataGetter + стратегия DS18B20
+
     dg::DataGetter dg;
-
-
-
     auto& ds = dg.emplace<dg::DG_DS18B20>("temp_ds18b20", "28-030397941733");
 
-    // 3) Привязка стратегии к "Field<float>" (который будет писать в GlobalState key="temp")
     Field<float> tempField("temp");
     ds.initRef(tempField);
 
-    // 4) init() всем стратегиям (если нужно через ctx — дополни)
     dg::ADataGetterStrategyBase::Ctx ctx;
     dg.init(ctx);
 
-    // 5) Scheduler: 1 поток в пуле (как ты просил)
-    auto& sch = Scheduler::instance(1);
+    // ВАЖНО: 2 потока: один под sensor tick, один под HTTP ioc.run()
+    auto& sch = Scheduler::instance(2);
 
-    // 6) Периодическая задача: читаем датчик -> сохраняем -> печатаем
+    // 1) Периодический сенсор
     sch.addPeriodic([&]() {
         try {
-            dg.tick(); // ds.tick() -> getDataRef() -> Field<float>::set() -> GlobalState.setGetter("temp", double)
-
+            dg.tick();
             auto e = gs.getGetterEntry("temp");
             double t = std::any_cast<double>(e.value);
 
             std::cout << "[DG] temp=" << t
                       << " valid=" << std::boolalpha << e.valid
-                      << " stampMs=" << e.stampMs
-                      << "\n";
+                      << " stampMs=" << e.stampMs << "\n";
         } catch (const std::exception& ex) {
-            // Мягкая ошибка сенсора: помечаем invalid и печатаем причину
             gs.setGetterInvalid("temp");
             auto e = gs.getGetterEntry("temp");
-
             std::cout << "[DG] temp=INVALID"
                       << " valid=" << std::boolalpha << e.valid
                       << " stampMs=" << e.stampMs
-                      << " err=" << ex.what()
-                      << "\n";
+                      << " err=" << ex.what() << "\n";
         }
     }, Scheduler::Ms(1000), "DG_DS18B20->GlobalState(temp)");
 
-    std::cout << "Running. Press Ctrl+C to stop.\n";
+    // 2) HTTP server — стартуем и запускаем run() как “вечную” задачу
+    auto httpServer = std::make_shared<GH_HttpServer>(8080);
+    httpServer->start();
 
-    // 7) main thread просто живёт, пока Ctrl+C
-    while (g_run) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    }
+    sch.addDelayed([httpServer]() {
+        std::cout << "HTTP server on http://localhost:8080\n";
+        std::cout << "GET /status\n";
+        std::cout << "GET /schema/getters\n";
+        std::cout << "GET /schema/executors\n";
+        std::cout << "GET /getters\n";
+        std::cout << "GET /getters/<key>\n";
+        std::cout << "GET /executors\n";
+        httpServer->run(); // BLOCKING
+    }, Scheduler::Ms(0), "HTTP ioc.run()");
 
-    // 8) graceful stop
+    std::cout << "Running. Ctrl+C to stop.\n";
+    while (g_run) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // stop http first
+    httpServer->stop();
+
+    // stop scheduler
     sch.stop();
     std::cout << "Stopped.\n";
     return 0;
