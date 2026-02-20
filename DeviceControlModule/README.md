@@ -1,24 +1,29 @@
-# Device Control Module (DCM)
+# PROTOCOL.md — Device Control Module Protocol Specification
 ### Arduino Mega 2560 — Digital + PWM Controller  
-**Features:** CRC8 Integrity • Per-Channel Inversion • Init State Apply • Multi-Packet Commands • Structured Feedback Bitmask
+**Supports**: CRC8 • Multi-Layer Parser • Keywords • Multi-Packet Commands • Per-Channel Inversion • Full State Initialization • Structured Feedback Mask
 
-## Overview
-The **Device Control Module (DCM)** provides structured control over multiple Digital and PWM output channels on an **Arduino Mega 2560** using a custom ASCII protocol with **CRC8 validation**.
+---
+
+# 1. System Overview
+
+DeviceControlModule (DCM) is a fully structured UART-based ASCII protocol for controlling **Digital (ID=68)** and **PWM (ID=80)** channels on Arduino Mega 2560.
 
 The firmware supports:
 
-- **8 Digital output channels** (ID `68`)
-- **3 PWM output channels** (ID `80`)
-- **CRC8 (poly 0x07) integrity check**
-- **Per-channel inversion configuration**
-- **Hardware state initialization from internal state tables**
-- **Multi-packet command sequences**
-- **Keyword commands (`inited`, `showall`, `setAll`)**
-- **Detailed 13-bit feedback status**
+- 8 Digital outputs  
+- 3 PWM outputs  
+- CRC8 validation (poly 0x07)  
+- Per-channel **inversion** for Digital and PWM  
+- Multi-packet command messages  
+- Keyword commands  
+- Two-layer state: **hardware state** + **logical state**  
+- Full feedback mask (13 bits)  
 
-## Pin Mapping
+---
 
-### Digital Outputs (ID = 68)
+# 2. Pin Tables
+
+## 2.1 Digital Table (ID = 68)
 | Index | Arduino Pin |
 |-------|-------------|
 | 0 | 22 |
@@ -30,126 +35,378 @@ The firmware supports:
 | 6 | 34 |
 | 7 | 36 |
 
-### PWM Outputs (ID = 80)
-| Index | Arduino Pin | Timer |
-|-------|-------------|--------|
-| 0 | 2 | Timer3 |
-| 1 | 3 | Timer3 |
-| 2 | 5 | Timer3 |
+## 2.2 PWM Table (ID = 80)
+| Index | Arduino Pin |
+|-------|-------------|
+| 0 | 2 |
+| 1 | 3 |
+| 2 | 5 |
 
-## Internal State Tables
+---
 
-### Hardware State
-```
+# 3. Internal State Tables
+
+## 3.1 Hardware state
+```cpp
 bool    digitalState[8];   // 0 or 1
 uint8_t pwmState[3];       // 0..255
 ```
 
-### Per-Channel Inversion
-```
-bool invertDigital[8];     // false = normal, true = inverted
-bool invertPWM[3];         // false = normal, true = reversed
+## 3.2 Inversion state
+```cpp
+bool invertDigital[8] = { true,true,true,true,true,true,true,true };
+bool invertPWM[3]     = { false,false,false };
 ```
 
-### Logical State (computed)
-```
+- Digital inversion: `logicVal = invertDigital[i] ? !input : input`
+- PWM inversion: `logicPWM = invertPWM[i] ? (255 - input) : input`
+
+## 3.3 Logical state
+```cpp
 logicDigital[i] = invertDigital[i] ? !digitalState[i] : digitalState[i];
 logicPWM[i]     = invertPWM[i]     ? (255 - pwmState[i]) : pwmState[i];
 ```
 
-## Initialization Behavior
-Upon startup (`setup()`):
+Logical state = representation AFTER applying inversion.
 
-1. All output pins are configured as OUTPUT.
-2. Hardware pins are initialized using **digitalState[]** and **pwmState[]**.
-3. If a channel has inversion enabled, the inverted hardware value is applied.
-4. Logical state tables (`logicDigital[]`, `logicPWM[]`) are updated.
+---
 
-## Protocol Format
-All messages use the format:
+# 4. Initialization Process (`pinsInit()`)
+
+On boot:
+
+1. `pinMode(pin, OUTPUT)` for each channel  
+2. Digital output initialized as:  
+
+```cpp
+digitalWrite(pin, digitalState[i] ^ invertDigital[i] ? HIGH : LOW);
 ```
-<Data>/<CRC8>
 
+3. PWM outputs start with:
+
+```cpp
+analogWrite(pin, 0);
+pwmState[i] = 0;
+```
+
+4. Logical tables computed by `updateLogicStates()`  
+5. Module prints:
+
+```text
+deviceControlModule (CRC8, Digital+PWM, per-channel invert) started
+```
+
+---
+
+# 5. CRC8 Specification
+
+DCM uses CRC8 for all packets:
+
+- Polynomial: **0x07**
+- Init value: **0x00**
+- No reflection
+- No XOR-in/out
+
+Computation:
+
+```cpp
+crc ^= data[i];
+for (8 bits)
+    crc = (crc & 0x80) ? ((crc << 1) ^ 0x07) : (crc << 1);
+```
+
+CRC is formatted as **2-digit hex** (uppercase).
+
+Example:
+
+```text
+68,0,1 → 1E → command is: 68,0,1/1E
+```
+
+---
+
+# 6. Message Format (Global Parser Layer 1)
+
+Every message is:
+
+```text
+<Data>/<CRC>\n
 ```
 
 Example:
-```
-68,0,1/1E
+
+```text
+80,0,255/7A
 ```
 
-## CRC8 Specification
-- Polynomial: **0x07**
-- Initial value: **0x00**
-- No XOR-in
-- No XOR-out
-- No reflection
+Layer-1 validation rules:
 
-## Packet Structure
+| Rule | Error |
+|------|--------|
+| No slash `/` | ERROR_SYNTAX |
+| More than one slash | ERROR_1L_TOO_MANY_DATA |
+| Empty data before slash | ERROR_1L_NO_DATA |
+| Empty CRC part | ERROR_NULL_CRC |
+| CRC not hex | ERROR_INVALID_CRC |
+| CRC mismatch | ERROR_INVALID_CRC |
 
-### Level 1 — Command + CRC
+---
+
+# 7. Keyword Commands (Layer 2: Keyword Handler)
+
+A message is a keyword if the first token is **non-numeric**.
+
+### 7.1 `inited`
+Response:
+```text
+ok/<CRC>
 ```
-<Data>/<CRC>
+Feedback bit: `GET_KEYWORD`
+
+---
+
+### 7.2 `showall`
+Returns all hardware states, non-inverted:
+
+```text
+68,0,1;68,1,0;...;80,0,255;80,1,0;80,2,128
 ```
 
-### Level 2 — Multiple packets (max 8)
-```
-Packet1;Packet2;Packet3...
+### 7.3 `showall,68,<idx>`
+Returns one digital entry.
+
+### 7.4 `showall,80,all`
+Returns all PWM entries.
+
+### 7.5 `setAll`
+Enters “state update mode”, meaning the **next valid frame** is treated as a full hardware state update.
+
+Responds:
+```text
+setAll_wait/CRC
 ```
 
-### Level 3 — Single packet (3 fields)
+### 7.6 `end`
+Exits `setAll` mode.
+
+---
+
+# 8. Data Packets (Layer 3: Multi-Packet Parser)
+
+Non-keyword messages contain one or more packets separated by `;`:
+
+```text
+68,0,1;68,1,0;80,0,255
 ```
+
+Each packet must match:
+
+```text
 <TableID>,<Index>,<Value>
 ```
 
-## Error Feedback Bitmask
-Feedback is a **13-bit mask** printed as a binary string:
+Example:
+
+```text
+68,3,1   → Digital index 3 output HIGH
+80,0,255 → PWM index 0 full duty
 ```
+
+### Allowed ranges:
+
+- Digital value: `0` or `1`
+- PWM value: `0..255`
+- Max packets per frame: **8**
+
+### Errors:
+
+| Condition | Flag |
+|----------|-------|
+| No packets | ERROR_2L_NO_DATA_PACKETS |
+| More than 8 | ERROR_2L_TOO_MANY_PACKETS |
+| Packet missing fields | ERROR_3L_WRONG_DATA_PACKETS |
+
+---
+
+# 9. Hardware Execution (Layer 4: State Application)
+
+## 9.1 Digital channels
+```cpp
+bool logicVal = (val != 0);
+
+if (invertDigital[idx])
+    logicVal = !logicVal;
+
+digitalState[idx] = logicVal;
+digitalWrite(digitalPins[idx], logicVal ? HIGH : LOW);
+```
+
+## 9.2 PWM channels
+```cpp
+uint8_t logicPwm = constrain(val, 0, 255);
+
+if (invertPWM[idx])
+    logicPwm = 255 - logicPwm;
+
+pwmState[idx] = logicPwm;
+analogWrite(pwmPins[idx], logicPwm);
+```
+
+After all packets processed:
+```cpp
+updateLogicStates();
+```
+
+---
+
+# 10. Feedback Mask Specification
+
+Feedback is always printed after command processing:
+
+```text
 KXXXX87654321
 ```
 
-## Keyword Commands
-- `inited`
-- `showall`
-- `setAll`
+Total bits: **13**
 
-## Device Commands (Digital/PWM)
+| Bit | Name | Meaning |
+|-----|-----------|----------|
+| 0 | ERROR_SYNTAX | Wrong structure |
+| 1 | ERROR_1L_NO_DATA | No data in Level-1 |
+| 2 | ERROR_1L_TOO_MANY_DATA | More than 1 '/' |
+| 3 | ERROR_INVALID_CRC | Bad CRC |
+| 4 | ERROR_NULL_CRC | Empty CRC part |
+| 5 | ERROR_2L_NO_DATA_PACKETS | No packets |
+| 6 | ERROR_2L_TOO_MANY_PACKETS | >8 packets |
+| 7 | ERROR_3L_WRONG_DATA_PACKETS | Wrong packet format |
+| 8–11 | PACKETS_COUNT | Number of processed packets |
+| 12 | GET_KEYWORD | Keyword command executed |
 
-### Digital Write
-```
-68,<index>,<0|1>
-```
+---
 
-### PWM Write
-```
-80,<index>,<0..255>
-```
+# 11. Example Commands
 
-## Inversion Logic
-### Digital inversion:
-```
-invertDigital[i] = true → hardwareValue = !logicValue
-```
-
-### PWM inversion:
-```
-invertPWM[i] = true → hardwareValue = 255 - logicValue
+## Digital ON
+```text
+68,0,1/1E
 ```
 
-## QA Test Checklist
+## Digital OFF
+```text
+68,0,0/19
+```
 
-### Boot Test
-- Hardware matches `digitalState[]`
-- PWM matches `pwmState[]`
+## PWM set to 128
+```text
+80,0,128/E2
+```
 
-### CRC Test
-- Wrong CRC → `ERROR_INVALID_CRC`
+## showall
+```text
+showall/3B
+```
 
-### Digital/PWM Tests
-- 68,0,1/1E → ON
-- 68,0,0/19 → OFF
-- PWM commands work with inversion
+## setAll mode
+```text
+setAll/6E
+```
 
-### Keyword Tests
-- `inited` returns OK
-- `showall` returns state list
+## end setAll mode
+```text
+end/D5
+```
 
+---
+
+# 12. Full Data Flow (Layer Diagram)
+
+```text
+┌─────────────────────────────────────────────┐
+│                 INPUT STRING                │
+│      "68,0,1;80,2,255/4A\n"                │
+└─────────────────────────────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────┐
+│      L1: Slash Parser (Data / CRC)          │
+│  - Syntax errors                             │
+│  - Missing CRC                               │
+│  - CRC mismatch                              │
+└─────────────────────────────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────┐
+│   L2: Keyword Detector                       │
+│  - if first token non-digit → keyword        │
+│  - else → data packets                       │
+└─────────────────────────────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────┐
+│   L3: Packet Splitter (max 8 packets)        │
+│  - Split by ';'                              │
+│  - Validate packet count                     │
+└─────────────────────────────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────┐
+│   L4: Packet Parser                          │
+│  "Table,Index,Value"                         │
+│   → Apply inversion                          │
+│   → Update HW state                          │
+└─────────────────────────────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────┐
+│   L5: Feedback Encoder                       │
+│  - Build 13-bit mask                         │
+│  - Print to serial                           │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+# 13. Full QA Checklist
+
+## Boot
+- [ ] Digital pins correctly initialized with inversion
+- [ ] PWM pins initialized to 0
+
+## CRC
+- [ ] Wrong CRC activates ERROR_INVALID_CRC
+- [ ] Empty CRC activates ERROR_NULL_CRC
+- [ ] Extra slash activates ERROR_1L_TOO_MANY_DATA
+
+## Digital control
+- [ ] `68,0,1` turns ON (with inversion accounted)
+- [ ] `68,0,0` turns OFF
+
+## PWM control
+- [ ] Limits enforced (0..255)
+- [ ] Inversion works (`255 - value`)
+
+## Packet system
+- [ ] Up to 8 packets processed
+- [ ] Correct PACKETS_COUNT bits set
+- [ ] Wrong packet → ERROR_3L_WRONG_DATA_PACKETS
+
+## Keywords
+- [ ] `inited` returns `ok`
+- [ ] `showall` prints all states
+- [ ] `setAll` enters mode
+- [ ] `end` exits mode
+
+## setAll mode
+- [ ] Next valid frame updates **entire system**
+- [ ] After update, inversion applied  
+- [ ] Logic tables updated  
+
+---
+
+# 14. License
+Free to use for any commercial or personal projects.
+
+---
+
+# 15. End of Specification
+This file documents the entire command protocol, parser architecture, error system, CRC validation, multi-packet engine, inversion logic, and hardware mapping for DeviceControlModule.
