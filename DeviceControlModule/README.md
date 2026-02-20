@@ -1,4 +1,4 @@
-# PROTOCOL.md — Device Control Module Protocol Specification
+# Device Control Module Protocol Specification
 ### Arduino Mega 2560 — Digital + PWM Controller  
 **Supports**: CRC8 • Multi-Layer Parser • Keywords • Multi-Packet Commands • Per-Channel Inversion • Full State Initialization • Structured Feedback Mask
 
