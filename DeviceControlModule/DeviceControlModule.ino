@@ -153,7 +153,7 @@ void printFeedbackBits(uint16_t fb) {
     buf[12 - i] = (fb & (1 << i)) ? '1' : '0';
   }
   buf[13] = '\0';
-  Serial.println(buf);
+  Serial1.println(buf);
 }
 
 // отправить строку с CRC8: "data/CRC"
@@ -164,7 +164,7 @@ void sendWithCRC(const String& data) {
   String out = data;
   out += "/";
   out += crcHex;
-  Serial.println(out);
+  Serial1.println(out);
 }
 
 // ======================= State builders ======================
@@ -515,17 +515,17 @@ void processLine(String line) {
 // ======================= setup/loop ==========================
 
 void setup() {
-  Serial.begin(115200);
+  Serial1.begin(115200);
   pinsInit();
   pinMode(13, OUTPUT);
   digitalWrite(13, HIGH);
-  Serial.println(F("deviceControlModule (CRC8, Digital+PWM, per-channel invert) started"));
+  Serial1.println(F("deviceControlModule (CRC8, Digital+PWM, per-channel invert) started"));
 }
 
 void loop() {
   static String line;
-  while (Serial.available() > 0) {
-    char c = (char)Serial.read();
+  while (Serial1.available() > 0) {
+    char c = (char)Serial1.read();
     if (c == '\n') {
       processLine(line);
       line = "";
