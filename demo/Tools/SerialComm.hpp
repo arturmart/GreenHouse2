@@ -124,7 +124,7 @@ public:
             return;
         }
 
-        serialPrintf(serialPort_, "%s", str.c_str());
+        serialPrintf(serialPort_, "%s\r\n", str.c_str());
     }
 
     // -------------------------
