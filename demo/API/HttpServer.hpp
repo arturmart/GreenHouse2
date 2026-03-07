@@ -8,7 +8,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "GlobalState.hpp"
+#include "../GlobalState.hpp"
 
 namespace asio  = boost::asio;
 namespace beast = boost::beast;
