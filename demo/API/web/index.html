@@ -60,6 +60,17 @@
       background: rgba(255,255,255,.06);
       cursor: pointer;
     }
+    .canvas-wrap {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    #ramDonut {
+      width: 400px;
+      height: 400px;
+      margin: auto;
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -98,6 +109,20 @@
       <div id="chartGetters" class="chart-options" style="margin:12px 0 10px 0;"></div>
     
       <canvas id="tempChart" width="1100" height="260"></canvas>
+    </div>
+    
+    <div class="card" style="margin-top:14px">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div class="k">RAM Usage</div>
+          <div class="sub">Donut chart: used vs available</div>
+        </div>
+        <div id="ramText" class="pill muted">—</div>
+      </div>
+    
+      <div class="row" style="justify-content:center; margin-top:10px;">
+        <canvas id="ramDonut" width="260" height="260"></canvas>
+      </div>
     </div>
 
     <div class="grid">

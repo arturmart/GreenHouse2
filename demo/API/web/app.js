@@ -204,7 +204,202 @@ function drawMultiGetterChart() {
     legendX += 90;
   });
 }
+function formatKB(kb) {
+  if (!Number.isFinite(kb)) return "—";
 
+  const mb = kb / 1024;
+  const gb = mb / 1024;
+
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  return `${mb.toFixed(1)} MB`;
+}
+
+function clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+// 0 -> red, 1 -> green
+function usageColorByFreeRatio(freeRatio) {
+  const t = clamp(freeRatio, 0, 1);
+
+  let r, g, b = 90;
+
+  if (t < 0.5) {
+    const k = t / 0.5;
+    r = 255;
+    g = Math.round(lerp(90, 210, k));
+  } else {
+    const k = (t - 0.5) / 0.5;
+    r = Math.round(lerp(255, 73, k));
+    g = Math.round(lerp(210, 242, k));
+  }
+
+  return `rgb(${r},${g},${b})`;
+}
+
+function formatKB(kb) {
+  if (!Number.isFinite(kb)) return "—";
+
+  const mb = kb / 1024;
+  const gb = mb / 1024;
+
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  return `${mb.toFixed(1)} MB`;
+}
+
+function drawRamDonut(getters) {
+  const canvas = $("ramDonut");
+  const textBox = $("ramText");
+  if (!canvas || !textBox) return;
+
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#0f152d";
+  ctx.fillRect(0, 0, w, h);
+
+  const total = Number(getters?.sysRamTotal?.data?.value);
+  const available = Number(getters?.sysRamAvailable?.data?.value);
+  const free = Number(getters?.sysRamFree?.data?.value);
+  const processRamRaw = Number(getters?.sysRamProcess?.data?.value);
+
+  if (!Number.isFinite(total) || !Number.isFinite(available) || total <= 0) {
+    ctx.fillStyle = "rgba(255,255,255,.55)";
+    ctx.font = "13px sans-serif";
+    ctx.fillText("RAM data unavailable", 40, h / 2);
+    textBox.textContent = "—";
+    return;
+  }
+
+  const used = Math.max(0, total - available);
+  const processRam = Number.isFinite(processRamRaw)
+    ? Math.max(0, Math.min(processRamRaw, used))
+    : 0;
+
+  const otherUsed = Math.max(0, used - processRam);
+  const availableSafe = Math.max(0, available);
+
+  const processPct = total > 0 ? (processRam / total) * 100 : 0;
+  const otherPct = total > 0 ? (otherUsed / total) * 100 : 0;
+  const availPct = total > 0 ? (availableSafe / total) * 100 : 0;
+  const usedPct = total > 0 ? (used / total) * 100 : 0;
+
+  const freeRatio = availableSafe / total;
+
+  // requested colors
+  const greenhouseColor = "#bd93f9";               // purple
+  const dynamicRamColor = usageColorByFreeRatio(freeRatio); // red -> green
+
+  const cx = w / 2;
+  const cy = h / 2 - 10;
+
+  const radius = 58;
+  const lineWidth = 18;
+
+  const sum = processRam + otherUsed + availableSafe;
+  const aProcess = sum > 0 ? (processRam / sum) * Math.PI * 2 : 0;
+  const aOther = sum > 0 ? (otherUsed / sum) * Math.PI * 2 : 0;
+  const aAvail = sum > 0 ? (availableSafe / sum) * Math.PI * 2 : 0;
+
+  let start = -Math.PI / 2;
+
+  // background ring
+  ctx.beginPath();
+  ctx.strokeStyle = "rgba(255,255,255,.08)";
+  ctx.lineWidth = lineWidth;
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  
+ 
+  // Available
+  if (availableSafe > 0) {
+    ctx.beginPath();
+    ctx.strokeStyle = dynamicRamColor;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = "round";
+    ctx.globalAlpha = 0.35;
+    ctx.arc(cx, cy, radius, start+ aOther + aProcess, start+ aOther + aProcess + aAvail);
+    ctx.stroke();
+    ctx.globalAlpha = 1.0;
+  }
+  // Other processes
+  if (otherUsed > 0) {
+    ctx.beginPath();
+    ctx.strokeStyle = dynamicRamColor;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = "round";
+    ctx.arc(cx, cy, radius, start, start + aOther + aProcess);
+    ctx.stroke();
+  }
+   // GreenHouse process
+  if (processRam > 0) {
+    ctx.beginPath();
+    ctx.strokeStyle = greenhouseColor;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = "round";
+    ctx.arc(cx, cy, radius, start, start + aProcess);
+    ctx.stroke();
+
+  }
+
+  
+  
+
+  // center text
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#e7e9ee";
+  ctx.font = "bold 19px sans-serif";
+  ctx.fillText(`${usedPct.toFixed(0)}%`, cx, cy - 4);
+
+  ctx.font = "11px sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,.75)";
+  ctx.fillText("RAM used", cx, cy + 14);
+
+  // legend
+  ctx.textAlign = "left";
+  ctx.font = "12px sans-serif";
+
+  const y = h - 62;
+
+  ctx.fillStyle = greenhouseColor;
+  ctx.fillRect(20, y, 12, 12);
+  ctx.fillStyle = "#e7e9ee";
+  ctx.fillText(
+    `GreenHouse: ${formatKB(processRam)} (${processPct.toFixed(1)}%)`,
+    40,
+    y + 10
+  );
+
+  ctx.fillStyle = dynamicRamColor;
+  ctx.fillRect(20, y + 20, 12, 12);
+  ctx.fillStyle = "#e7e9ee";
+  ctx.fillText(
+    `Other processes: ${formatKB(otherUsed)} (${otherPct.toFixed(1)}%)`,
+    40,
+    y + 30
+  );
+
+  ctx.fillStyle = dynamicRamColor;
+  ctx.globalAlpha = 0.35;
+  ctx.fillRect(20, y + 40, 12, 12);
+  ctx.globalAlpha = 1.0;
+  ctx.fillStyle = "#e7e9ee";
+  ctx.fillText(
+    `Available: ${formatKB(availableSafe)} (${availPct.toFixed(1)}%)`,
+    40,
+    y + 50
+  );
+
+  textBox.textContent =
+    `Total ${formatKB(total)} | Free ${formatKB(free)} | Available ${formatKB(availableSafe)} (${availPct.toFixed(1)}%) | App ${formatKB(processRam)} (${processPct.toFixed(1)}%)`;
+}
 function renderGetterSelectors(getters, schemaG) {
   const box = $("chartGetters");
   if (!box) return;
@@ -262,6 +457,7 @@ async function reloadAll() {
 
     renderGetterSelectors(getters, schemaG);
     drawMultiGetterChart();
+    drawRamDonut(getters);
 
     const gKeys = Object.keys(getters || {}).sort();
     $("gCount").textContent = String(gKeys.length);
