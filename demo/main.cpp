@@ -375,21 +375,9 @@ int main() {
     sch.addPeriodic([&]() {
         try {
             dg.tick();
-
-            auto e = gs.getGetterEntry("temp");
-            double t = std::any_cast<double>(e.value);
-
-            std::cout << "[DG] temp=" << t
-                      << " valid=" << std::boolalpha << e.valid
-                      << " stampMs=" << e.stampMs << "\n";
-        } catch (const std::exception& ex) {
-            gs.setGetterInvalid("temp");
-
-            auto e = gs.getGetterEntry("temp");
-            std::cout << "[DG] temp=INVALID"
-                      << " valid=" << std::boolalpha << e.valid
-                      << " stampMs=" << e.stampMs
-                      << " err=" << ex.what() << "\n";
+        }
+        catch (const std::exception& ex) {
+            std::cout << "[DG] error: " << ex.what() << "\n";
         }
     }, Scheduler::Ms(1000), "DG tick -> GlobalState");
 
