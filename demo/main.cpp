@@ -15,6 +15,7 @@
 #include "DataGetter/DataGetter.hpp"
 #include "DataGetter/DG_DS18B20.hpp"
 #include "DataGetter/DG_OWM_Weather.hpp"
+#include "DataGetter/DG_SYS_MEM.hpp"
 //#include "DataGetter/DG_OWM_WeatherString.hpp"
 #include "API/HttpServer.hpp"
 
@@ -170,7 +171,49 @@ int main() {
                 continue;
             }
 
-            
+            if (bind.strategy == "DG_SYS_MEM") {
+                if (bind.args.size() < 1) {
+                    throw std::runtime_error(
+                        "DG_SYS_MEM requires field argument for getter: " + getterKey
+                    );
+                }
+
+                const std::string field = bind.args[0];
+
+                dg::DG_SYS_MEM::Field memField;
+
+                if (field == "total") {
+                    memField = dg::DG_SYS_MEM::Field::MEM_TOTAL;
+                } else if (field == "free") {
+                    memField = dg::DG_SYS_MEM::Field::MEM_FREE;
+                } else if (field == "available") {
+                    memField = dg::DG_SYS_MEM::Field::MEM_AVAILABLE;
+                }
+                else if (field == "process") {
+                    memField = dg::DG_SYS_MEM::Field::MEM_PROCESS;
+                }
+                else {
+                    throw std::runtime_error(
+                        "DG_SYS_MEM unknown field '" + field +
+                        "' for getter: " + getterKey
+                    );
+                }
+
+                auto& strat = dg.emplace<dg::DG_SYS_MEM>(
+                    "dg_" + getterKey,
+                    memField
+                );
+
+                getterFieldsDouble.push_back(
+                    std::make_unique<Field<double>>(getterKey)
+                );
+
+                strat.initRef(*getterFieldsDouble.back());
+
+                std::cout << "[CFG] getter " << getterKey
+                        << " -> DG_SYS_MEM(" << field << ")\n";
+                continue;
+            }
 
             std::cout << "[CFG] warning: unsupported getter strategy for "
                       << getterKey << ": " << bind.strategy << "\n";
