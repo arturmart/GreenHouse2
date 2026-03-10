@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "GlobalState.hpp"
+#include "Configurator.hpp"
 #include "Scheduler/Scheduler.hpp"
 #include "DataGetter/DataGetter.hpp"
 #include "DataGetter/DG_DS18B20.hpp"
@@ -16,7 +17,6 @@
 
 #include "Executor/Executor.hpp"
 #include "Executor/EX_DeviceControlModule.hpp"
-
 
 // ------------------------------------------------------------
 // Adapter: Field<T> -> GH_GlobalState getter map
@@ -74,7 +74,9 @@ int main() {
     std::signal(SIGINT, onSigInt);
 
     auto& gs = GH_GlobalState::instance();
-    if (!gs.loadFromTxt("DG_EXE_CONFIG.txt")) {
+    GH_Configurator cfg;
+
+    if (!cfg.loadFromTxt("DG_EXE_CONFIG.txt", gs)) {
         std::cerr << "Failed to load DG_EXE_CONFIG.txt\n";
         return 1;
     }
@@ -266,10 +268,10 @@ int main() {
     // Optional startup tests from config-mapped names
     // ------------------------------------------------------------
     try {
-        enqueueMappedAndSync("LOW_DCM_D_0",    std::any(true));
-        enqueueMappedAndSync("LOW_DCM_D_0",    std::any(false));
-        enqueueMappedAndSync("LOW_DCM_D_1",    std::any(true));
-        enqueueMappedAndSync("LOW_DCM_D_1",    std::any(false));
+        enqueueMappedAndSync("LOW_DCM_D_0", std::any(true));
+        enqueueMappedAndSync("LOW_DCM_D_0", std::any(false));
+        enqueueMappedAndSync("LOW_DCM_D_1", std::any(true));
+        enqueueMappedAndSync("LOW_DCM_D_1", std::any(false));
         enqueueMappedAndSync("LOW_DCM_D_2", std::any(true));
         enqueueMappedAndSync("LOW_DCM_D_2", std::any(false));
     } catch (...) {
