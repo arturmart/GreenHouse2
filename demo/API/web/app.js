@@ -1,10 +1,12 @@
 const $ = (id) => document.getElementById(id);
 
 const dot = $("dot");
-const apiBase = location.origin; // тот же хост/порт => без CORS
+const apiBase = location.origin;
 $("apiBase").textContent = apiBase;
 
 let timer = null;
+const tempHistory = [];
+const MAX_POINTS = 120;
 
 function setDot(ok) {
   dot.style.background = ok ? "#49f28a" : "#ff6b6b";
@@ -46,10 +48,91 @@ async function jget(path) {
   return await r.json();
 }
 
+async function jpost(path, body = {}) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await r.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch {}
+  if (!r.ok) throw new Error(data?.error || `${path} -> ${r.status}`);
+  return data;
+}
+
 function matchesSearch(s, key) {
   const q = (s || "").trim().toLowerCase();
   if (!q) return true;
   return String(key).toLowerCase().includes(q);
+}
+
+async function execCmd(name, action, value = "") {
+  try {
+    await jpost(`/api/executors/${encodeURIComponent(name)}/${action}`, { value });
+    await reloadAll();
+  } catch (e) {
+    alert(`Command failed: ${String(e.message || e)}`);
+  }
+}
+
+function drawTempChart() {
+  const canvas = $("tempChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#0f152d";
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.strokeStyle = "rgba(255,255,255,.08)";
+  for (let i = 0; i < 5; i++) {
+    const y = (h - 20) * i / 4 + 10;
+    ctx.beginPath();
+    ctx.moveTo(30, y);
+    ctx.lineTo(w - 10, y);
+    ctx.stroke();
+  }
+
+  if (tempHistory.length < 2) {
+    ctx.fillStyle = "rgba(255,255,255,.55)";
+    ctx.fillText("Not enough data", 40, 40);
+    return;
+  }
+
+  const vals = tempHistory.map(x => x.v).filter(v => Number.isFinite(v));
+  if (!vals.length) return;
+
+  let min = Math.min(...vals);
+  let max = Math.max(...vals);
+  if (Math.abs(max - min) < 0.5) {
+    min -= 0.5;
+    max += 0.5;
+  }
+
+  const left = 35;
+  const top = 10;
+  const cw = w - 45;
+  const ch = h - 20;
+
+  ctx.fillStyle = "rgba(255,255,255,.65)";
+  ctx.fillText(max.toFixed(1) + "°C", 2, top + 8);
+  ctx.fillText(min.toFixed(1) + "°C", 2, top + ch);
+
+  ctx.strokeStyle = "#49f28a";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+
+  tempHistory.forEach((p, i) => {
+    const x = left + (cw * i) / Math.max(1, tempHistory.length - 1);
+    const y = top + ch - ((p.v - min) / (max - min)) * ch;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+
+  ctx.stroke();
 }
 
 async function reloadAll() {
@@ -66,7 +149,16 @@ async function reloadAll() {
 
     setDot(status?.status === "ok");
 
-    // getters
+    // temp history
+    if (getters?.temp?.valid && getters?.temp?.data?.value != null) {
+      const v = Number(getters.temp.data.value);
+      if (Number.isFinite(v)) {
+        tempHistory.push({ t: Date.now(), v });
+        while (tempHistory.length > MAX_POINTS) tempHistory.shift();
+      }
+    }
+    drawTempChart();
+
     const gKeys = Object.keys(getters || {}).sort();
     $("gCount").textContent = String(gKeys.length);
 
@@ -88,7 +180,6 @@ async function reloadAll() {
 
     $("getters").innerHTML = gHtml || `<div class="small muted">Нет данных</div>`;
 
-    // executors
     $("eCount").textContent = String((executors || []).length);
 
     const eHtml = (executors || [])
@@ -101,11 +192,28 @@ async function reloadAll() {
         const mode = badgeMode(x.mode);
         const stamp = `<span class="pill muted">stamp:${fmtMs(x.stampMs)}</span>`;
         const data = x.data ? `${x.data.type}:${String(x.data.value)}` : "—";
-        return renderItem({
-          title: `<span class="mono">${x.id}</span> <span class="mono muted">${name}</span>`,
-          meta: `${schemaT} ${valid} ${mode} ${stamp}`,
-          right: `<span class="pill mono">${data}</span>`,
-        });
+
+        const isManual = String(x.mode || "").toUpperCase() === "MANUAL";
+
+        const controls = `
+          <div class="row" style="justify-content:flex-end">
+            <button onclick="execCmd('${name}','mode','manual')">MANUAL</button>
+            <button onclick="execCmd('${name}','mode','auto')">AUTO</button>
+            <button ${isManual ? "" : "disabled"} onclick="execCmd('${name}','on')">ON</button>
+            <button ${isManual ? "" : "disabled"} onclick="execCmd('${name}','off')">OFF</button>
+          </div>
+        `;
+
+        return `
+          <div class="item">
+            <div class="left">
+              <div class="k"><span class="mono">${x.id}</span> <span class="mono muted">${name}</span></div>
+              <div class="meta">${schemaT} ${valid} ${mode} ${stamp}</div>
+              <div class="small muted mono">${data}</div>
+            </div>
+            <div class="right">${controls}</div>
+          </div>
+        `;
       })
       .join("");
 

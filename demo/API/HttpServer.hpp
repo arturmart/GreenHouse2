@@ -7,6 +7,9 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <functional>
+#include <fstream>
+#include <sstream>
 
 #include "../GlobalState.hpp"
 
@@ -15,10 +18,19 @@ namespace beast = boost::beast;
 namespace http  = beast::http;
 using tcp = asio::ip::tcp;
 
-// -------------------------- JSON HELPERS --------------------------
+// ------------------------------------------------------------
+// Shared command callback
+// ------------------------------------------------------------
+using CommandHandler = std::function<std::string(
+    const std::string& name,
+    const std::string& action,
+    const std::string& value
+)>;
 
-//web
-static std::string readFile(const std::string& path) {
+// ------------------------------------------------------------
+// File helpers
+// ------------------------------------------------------------
+static inline std::string readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open()) throw std::runtime_error("Failed to open file: " + path);
     std::ostringstream ss;
@@ -26,6 +38,9 @@ static std::string readFile(const std::string& path) {
     return ss.str();
 }
 
+// ------------------------------------------------------------
+// JSON helpers
+// ------------------------------------------------------------
 static inline std::string jescape(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -58,7 +73,6 @@ static inline std::string any_to_json(const std::any& a) {
     }
     if (t == typeid(double)) {
         double v = std::any_cast<double>(a);
-        // std::to_string даёт много хвостов — но ок для простого API
         return "{\"type\":\"double\",\"value\":" + std::to_string(v) + "}";
     }
     if (t == typeid(std::string)) {
@@ -101,8 +115,9 @@ make_text(http::request<http::string_body> const& req, http::status st, const st
     return res;
 }
 
-// -------------------------- SIMPLE JSON MAP PARSER --------------------------
-// для POST можно допилить потом. Сейчас делаем GET-only как ты просил.
+// ------------------------------------------------------------
+// Simple JSON parser
+// ------------------------------------------------------------
 static inline std::unordered_map<std::string, std::string>
 parse_json_map(const std::string& s) {
     std::unordered_map<std::string, std::string> out;
@@ -134,7 +149,6 @@ parse_json_map(const std::string& s) {
             i = v2;
         }
 
-        // trim
         while (!value.empty() && value.back() == ' ') value.pop_back();
         while (!value.empty() && value.front() == ' ') value.erase(value.begin());
 
@@ -143,31 +157,18 @@ parse_json_map(const std::string& s) {
     return out;
 }
 
-static inline std::any convert_any(const std::string& type, const std::string& value) {
-    if (type == "bool") {
-        if (value == "true" || value == "1") return std::any(true);
-        if (value == "false" || value == "0") return std::any(false);
-        throw std::runtime_error("Invalid bool: " + value);
-    }
-    if (type == "int")    return std::any(std::stoi(value));
-    if (type == "double") return std::any(std::stod(value));
-    if (type == "string") return std::any(value);
-    throw std::runtime_error("Unsupported type: " + type);
-}
-
-// -------------------------- ROUTER --------------------------
-
+// ------------------------------------------------------------
+// Router
+// ------------------------------------------------------------
 static inline http::response<http::string_body>
-handle_request(http::request<http::string_body>&& req) {
+handle_request(http::request<http::string_body>&& req, const CommandHandler& cmdHandler) {
     const std::string target = std::string(req.target());
     const auto method = req.method();
     auto& st = GH_GlobalState::instance();
 
-    // health
     if (method == http::verb::get && target == "/status")
         return make_json(req, http::status::ok, "{\"status\":\"ok\"}");
 
-    // GET /schema/getters  -> keys from file
     if (method == http::verb::get && target == "/schema/getters") {
         auto schema = st.snapshotGetterSchema();
         std::string out = "{";
@@ -181,7 +182,6 @@ handle_request(http::request<http::string_body>&& req) {
         return make_json(req, http::status::ok, out);
     }
 
-    // GET /schema/executors -> names from file
     if (method == http::verb::get && target == "/schema/executors") {
         auto schema = st.snapshotExecSchemaByName();
         std::string out = "{";
@@ -195,7 +195,6 @@ handle_request(http::request<http::string_body>&& req) {
         return make_json(req, http::status::ok, out);
     }
 
-    // GET /getters -> all getters loaded from file (plus those created at runtime)
     if (method == http::verb::get && target == "/getters") {
         auto mp = st.snapshotGetters();
         std::string out = "{";
@@ -204,7 +203,6 @@ handle_request(http::request<http::string_body>&& req) {
             if (!first) out += ",";
             first = false;
 
-            // kv.second is GetterEntry
             out += "\"" + jescape(kv.first) + "\":{";
             out += "\"valid\":" + std::string(kv.second.valid ? "true" : "false");
             out += ",\"stampMs\":" + std::to_string(kv.second.stampMs);
@@ -215,7 +213,6 @@ handle_request(http::request<http::string_body>&& req) {
         return make_json(req, http::status::ok, out);
     }
 
-    // GET /getters/<key>
     if (method == http::verb::get && target.rfind("/getters/", 0) == 0) {
         const std::string key = target.substr(std::string("/getters/").size());
         try {
@@ -233,7 +230,6 @@ handle_request(http::request<http::string_body>&& req) {
         }
     }
 
-    // GET /executors
     if (method == http::verb::get && target == "/executors") {
         auto v = st.snapshotExecutors();
         std::string out = "[";
@@ -255,44 +251,79 @@ handle_request(http::request<http::string_body>&& req) {
         return make_json(req, http::status::ok, out);
     }
 
-    //web
-    if (req.method() == http::verb::get && target == "/") {
-      try {
-         auto html = readFile("API/web/index.html");
-         http::response<http::string_body> res{http::status::ok, req.version()};
-         res.set(http::field::content_type, "text/html; charset=utf-8");
-         res.keep_alive(req.keep_alive());
-         res.body() = html;
-         res.prepare_payload();
-         return res;
-      } catch (const std::exception& ex) {
-         return make_text(req, http::status::internal_server_error, ex.what());
-      }
-   }
+    if (method == http::verb::get && target == "/") {
+        try {
+            auto html = readFile("API/web/index.html");
+            http::response<http::string_body> res{http::status::ok, req.version()};
+            res.set(http::field::content_type, "text/html; charset=utf-8");
+            res.keep_alive(req.keep_alive());
+            res.body() = html;
+            res.prepare_payload();
+            return res;
+        } catch (const std::exception& ex) {
+            return make_text(req, http::status::internal_server_error, ex.what());
+        }
+    }
 
-   if (req.method() == http::verb::get && target == "/app.js") {
-      try {
-         auto js = readFile("API/web/app.js");
-         http::response<http::string_body> res{http::status::ok, req.version()};
-         res.set(http::field::content_type, "application/javascript; charset=utf-8");
-         res.keep_alive(req.keep_alive());
-         res.body() = js;
-         res.prepare_payload();
-         return res;
-      } catch (const std::exception& ex) {
-         return make_text(req, http::status::internal_server_error, ex.what());
-      }
-   }
+    if (method == http::verb::get && target == "/app.js") {
+        try {
+            auto js = readFile("API/web/app.js");
+            http::response<http::string_body> res{http::status::ok, req.version()};
+            res.set(http::field::content_type, "application/javascript; charset=utf-8");
+            res.keep_alive(req.keep_alive());
+            res.body() = js;
+            res.prepare_payload();
+            return res;
+        } catch (const std::exception& ex) {
+            return make_text(req, http::status::internal_server_error, ex.what());
+        }
+    }
 
-    // POST endpoints можно включить позже (когда решим политику безопасности записи)
+    // POST /api/executors/<name>/mode    body: {"value":"manual"} or {"value":"auto"}
+    if (method == http::verb::post && target.rfind("/api/executors/", 0) == 0) {
+        try {
+            const std::string prefix = "/api/executors/";
+            const std::string tail = target.substr(prefix.size());
+
+            auto slash = tail.find('/');
+            if (slash == std::string::npos) {
+                return make_json(req, http::status::bad_request, "{\"error\":\"bad executor route\"}");
+            }
+
+            const std::string name = tail.substr(0, slash);
+            const std::string action = tail.substr(slash + 1);
+
+            std::string value;
+            if (!req.body().empty()) {
+                auto mp = parse_json_map(req.body());
+                auto it = mp.find("value");
+                if (it != mp.end()) value = it->second;
+            }
+
+            if (!cmdHandler) {
+                return make_json(req, http::status::internal_server_error,
+                    "{\"error\":\"command handler is not configured\"}");
+            }
+
+            const std::string result = cmdHandler(name, action, value);
+            return make_json(req, http::status::ok, result);
+        } catch (const std::exception& ex) {
+            return make_json(req, http::status::bad_request,
+                std::string("{\"error\":\"") + jescape(ex.what()) + "\"}");
+        }
+    }
+
     return make_text(req, http::status::not_found, "Not found");
 }
 
-// -------------------------- SESSION + LISTENER --------------------------
-
+// ------------------------------------------------------------
+// Session + Listener
+// ------------------------------------------------------------
 class HttpSession : public std::enable_shared_from_this<HttpSession> {
 public:
-    explicit HttpSession(tcp::socket socket) : socket_(std::move(socket)) {}
+    HttpSession(tcp::socket socket, CommandHandler cmdHandler)
+        : socket_(std::move(socket)), cmdHandler_(std::move(cmdHandler)) {}
+
     void run() { do_read(); }
 
 private:
@@ -300,6 +331,7 @@ private:
     beast::flat_buffer buffer_;
     http::request<http::string_body> req_;
     std::shared_ptr<void> hold_;
+    CommandHandler cmdHandler_;
 
     void do_read() {
         req_ = {};
@@ -314,7 +346,7 @@ private:
         if (ec) return;
 
         auto res = std::make_shared<http::response<http::string_body>>(
-            handle_request(std::move(req_))
+            handle_request(std::move(req_), cmdHandler_)
         );
         hold_ = res;
 
@@ -339,8 +371,8 @@ private:
 
 class Listener : public std::enable_shared_from_this<Listener> {
 public:
-    Listener(asio::io_context& ioc, tcp::endpoint ep)
-        : ioc_(ioc), acceptor_(ioc) {
+    Listener(asio::io_context& ioc, tcp::endpoint ep, CommandHandler cmdHandler)
+        : ioc_(ioc), acceptor_(ioc), cmdHandler_(std::move(cmdHandler)) {
         beast::error_code ec;
         acceptor_.open(ep.protocol(), ec);
         acceptor_.set_option(asio::socket_base::reuse_address(true), ec);
@@ -353,12 +385,13 @@ public:
 private:
     asio::io_context& ioc_;
     tcp::acceptor acceptor_;
+    CommandHandler cmdHandler_;
 
     void do_accept() {
         acceptor_.async_accept(
             asio::make_strand(ioc_),
             [self = shared_from_this()](beast::error_code ec, tcp::socket s) {
-                if (!ec) std::make_shared<HttpSession>(std::move(s))->run();
+                if (!ec) std::make_shared<HttpSession>(std::move(s), self->cmdHandler_)->run();
                 self->do_accept();
             });
     }
@@ -366,22 +399,21 @@ private:
 
 class GH_HttpServer {
 public:
-    explicit GH_HttpServer(uint16_t port)
-        : ioc_(1), port_(port) {}
+    explicit GH_HttpServer(uint16_t port, CommandHandler cmdHandler = {})
+        : ioc_(1), port_(port), cmdHandler_(std::move(cmdHandler)) {}
 
     void start() {
         auto ep = tcp::endpoint(tcp::v4(), port_);
-        listener_ = std::make_shared<Listener>(ioc_, ep);
+        listener_ = std::make_shared<Listener>(ioc_, ep, cmdHandler_);
         listener_->run();
     }
 
-    // blocking
     void run() { ioc_.run(); }
-
     void stop() { ioc_.stop(); }
 
 private:
     asio::io_context ioc_;
     uint16_t port_{8080};
     std::shared_ptr<Listener> listener_;
+    CommandHandler cmdHandler_;
 };
