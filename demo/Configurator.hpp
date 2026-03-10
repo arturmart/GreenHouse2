@@ -18,9 +18,18 @@ public:
     using ValueType  = GH_GlobalState::ValueType;
     using DcmBinding = GH_GlobalState::DcmBinding;
 
+    struct GetterBinding {
+        std::string strategy;
+        std::vector<std::string> args;
+    };
+
+    using GetterBindingMap = std::unordered_map<std::string, GetterBinding>;
+
     bool loadFromTxt(const std::string& path, GH_GlobalState& gs) {
         std::ifstream in(path);
         if (!in.is_open()) return false;
+
+        getter_bindings_.clear();
 
         enum class Section {
             NONE,
@@ -28,7 +37,8 @@ public:
             SCHEMA_EXECUTORS,
             EXECUTORS,
             GETTERS,
-            DCM_MAP
+            DCM_MAP,
+            GETTER_BINDINGS
         };
 
         Section sec = Section::NONE;
@@ -43,6 +53,7 @@ public:
             if (isSection(line, "executors"))        { sec = Section::EXECUTORS;        continue; }
             if (isSection(line, "getters"))          { sec = Section::GETTERS;          continue; }
             if (isSection(line, "dcm_map"))          { sec = Section::DCM_MAP;          continue; }
+            if (isSection(line, "getter_bindings"))  { sec = Section::GETTER_BINDINGS;  continue; }
 
             switch (sec) {
                 case Section::SCHEMA_GETTERS:   parseSchemaGetterLine(line, gs);   break;
@@ -50,12 +61,28 @@ public:
                 case Section::EXECUTORS:        parseExecutorLine(line, gs);       break;
                 case Section::GETTERS:          parseGetterLine(line, gs);         break;
                 case Section::DCM_MAP:          parseDcmMapLine(line, gs);         break;
+                case Section::GETTER_BINDINGS:  parseGetterBindingLine(line);      break;
                 default: break;
             }
         }
 
         return true;
     }
+
+    const GetterBindingMap& getterBindings() const {
+        return getter_bindings_;
+    }
+
+    GetterBinding getGetterBinding(const std::string& key) const {
+        auto it = getter_bindings_.find(key);
+        if (it == getter_bindings_.end()) {
+            throw std::runtime_error("Getter binding not found: " + key);
+        }
+        return it->second;
+    }
+
+private:
+    GetterBindingMap getter_bindings_;
 
 private:
     void parseSchemaGetterLine(const std::string& line, GH_GlobalState& gs) {
@@ -148,6 +175,30 @@ private:
         }
 
         gs.setDcmBindingByName(name, DcmBinding{tableId, index, vt});
+    }
+
+    void parseGetterBindingLine(const std::string& line) {
+        auto eq = line.find('=');
+        if (eq == std::string::npos) {
+            throw std::runtime_error("getter_bindings line must contain '=': " + line);
+        }
+
+        const std::string key = trim(line.substr(0, eq));
+        const std::string rhs = trim(line.substr(eq + 1));
+
+        auto parts = split(rhs, ',');
+        if (parts.empty()) {
+            throw std::runtime_error("getter_bindings line must be: key=strategy,arg1,arg2,... : " + line);
+        }
+
+        GetterBinding gb;
+        gb.strategy = trim(parts[0]);
+
+        for (size_t i = 1; i < parts.size(); ++i) {
+            gb.args.push_back(trim(parts[i]));
+        }
+
+        getter_bindings_[key] = std::move(gb);
     }
 
 private:

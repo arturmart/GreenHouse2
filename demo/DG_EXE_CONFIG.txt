@@ -1,7 +1,17 @@
 [schema_getters]
 temp=double
-temp2=double
+tempAPI=double
 date=string
+
+[getters]
+temp=double,0.0
+tempAPI=double,0.0
+date=string,2026-02-13 21:00
+
+[getter_bindings]
+temp=DG_DS18B20,28-030397941733
+tempAPI=DG_OWM_WEATHER,x,40.1772,44.5035,temp,60000
+
 
 [schema_executors]
 LOW_DCM_D_0=bool
@@ -26,10 +36,8 @@ LOW_DCM_D_6=7,bool,false,manual
 LOW_DCM_D_7=8,bool,false,manual
 
 
-[getters]
-temp=double,0.0
-temp2=double,0.0
-date=string,2026-02-13 21:00
+
+
 
 [dcm_map]
 LOW_DCM_D_0=68,0,bool

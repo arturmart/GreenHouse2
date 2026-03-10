@@ -44,6 +44,22 @@
     a { color:#9bd3ff; text-decoration: none; }
     a:hover { text-decoration: underline; }
     canvas { width: 100%; max-width: 100%; border-radius: 12px; background: #0f152d; }
+    .chart-options {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .chart-opt {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.06);
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -74,10 +90,13 @@
     <div class="card" style="margin-top:14px">
       <div class="row" style="justify-content:space-between">
         <div>
-          <div class="k">Температура</div>
-          <div class="sub">История getter: temp</div>
+          <div class="k">График getter-ов</div>
+          <div class="sub">Можно выбрать несколько numeric getter-ов</div>
         </div>
       </div>
+    
+      <div id="chartGetters" class="chart-options" style="margin:12px 0 10px 0;"></div>
+    
       <canvas id="tempChart" width="1100" height="260"></canvas>
     </div>
 

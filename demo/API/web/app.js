@@ -5,7 +5,9 @@ const apiBase = location.origin;
 $("apiBase").textContent = apiBase;
 
 let timer = null;
-const tempHistory = [];
+
+const historyMap = {};          // { getterKey: [{t, v}, ...] }
+const selectedGetters = new Set(["temp"]);
 const MAX_POINTS = 120;
 
 function setDot(ok) {
@@ -76,9 +78,39 @@ async function execCmd(name, action, value = "") {
   }
 }
 
-function drawTempChart() {
+function isNumericGetter(entry) {
+  const t = entry?.data?.type;
+  return t === "int" || t === "double";
+}
+
+function historyPush(getterKey, value) {
+  if (!historyMap[getterKey]) {
+    historyMap[getterKey] = [];
+  }
+  historyMap[getterKey].push({ t: Date.now(), v: value });
+  while (historyMap[getterKey].length > MAX_POINTS) {
+    historyMap[getterKey].shift();
+  }
+}
+
+function lineColor(index) {
+  const colors = [
+    "#49f28a",
+    "#6ecbff",
+    "#ffb86c",
+    "#ff79c6",
+    "#f1fa8c",
+    "#bd93f9",
+    "#8be9fd",
+    "#ff5555"
+  ];
+  return colors[index % colors.length];
+}
+
+function drawMultiGetterChart() {
   const canvas = $("tempChart");
   if (!canvas) return;
+
   const ctx = canvas.getContext("2d");
   const w = canvas.width;
   const h = canvas.height;
@@ -87,52 +119,120 @@ function drawTempChart() {
   ctx.fillStyle = "#0f152d";
   ctx.fillRect(0, 0, w, h);
 
+  const selectedKeys = [...selectedGetters].filter(k => historyMap[k] && historyMap[k].length > 0);
+
   ctx.strokeStyle = "rgba(255,255,255,.08)";
   for (let i = 0; i < 5; i++) {
     const y = (h - 20) * i / 4 + 10;
     ctx.beginPath();
-    ctx.moveTo(30, y);
+    ctx.moveTo(40, y);
     ctx.lineTo(w - 10, y);
     ctx.stroke();
   }
 
-  if (tempHistory.length < 2) {
+  if (selectedKeys.length === 0) {
     ctx.fillStyle = "rgba(255,255,255,.55)";
-    ctx.fillText("Not enough data", 40, 40);
+    ctx.font = "14px sans-serif";
+    ctx.fillText("Select numeric getters to draw chart", 45, 40);
     return;
   }
 
-  const vals = tempHistory.map(x => x.v).filter(v => Number.isFinite(v));
-  if (!vals.length) return;
+  const allValues = [];
+  for (const key of selectedKeys) {
+    for (const p of historyMap[key]) {
+      if (Number.isFinite(p.v)) allValues.push(p.v);
+    }
+  }
 
-  let min = Math.min(...vals);
-  let max = Math.max(...vals);
+  if (!allValues.length) {
+    ctx.fillStyle = "rgba(255,255,255,.55)";
+    ctx.font = "14px sans-serif";
+    ctx.fillText("Not enough data", 45, 40);
+    return;
+  }
+
+  let min = Math.min(...allValues);
+  let max = Math.max(...allValues);
+
   if (Math.abs(max - min) < 0.5) {
     min -= 0.5;
     max += 0.5;
   }
 
-  const left = 35;
+  const left = 45;
   const top = 10;
-  const cw = w - 45;
+  const cw = w - 55;
   const ch = h - 20;
 
   ctx.fillStyle = "rgba(255,255,255,.65)";
-  ctx.fillText(max.toFixed(1) + "°C", 2, top + 8);
-  ctx.fillText(min.toFixed(1) + "°C", 2, top + ch);
+  ctx.font = "12px sans-serif";
+  ctx.fillText(max.toFixed(2), 4, top + 10);
+  ctx.fillText(min.toFixed(2), 4, top + ch);
 
-  ctx.strokeStyle = "#49f28a";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
+  selectedKeys.forEach((key, idx) => {
+    const arr = historyMap[key];
+    if (!arr || arr.length < 2) return;
 
-  tempHistory.forEach((p, i) => {
-    const x = left + (cw * i) / Math.max(1, tempHistory.length - 1);
-    const y = top + ch - ((p.v - min) / (max - min)) * ch;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    ctx.strokeStyle = lineColor(idx);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+
+    arr.forEach((p, i) => {
+      const x = left + (cw * i) / Math.max(1, arr.length - 1);
+      const y = top + ch - ((p.v - min) / (max - min)) * ch;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+
+    ctx.stroke();
   });
 
-  ctx.stroke();
+  // legend
+  let legendX = 60;
+  const legendY = 20;
+
+  selectedKeys.forEach((key, idx) => {
+    const color = lineColor(idx);
+
+    ctx.fillStyle = color;
+    ctx.fillRect(legendX, legendY, 12, 12);
+
+    ctx.fillStyle = "#e7e9ee";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(key, legendX + 18, legendY + 10);
+
+    legendX += 90;
+  });
+}
+
+function renderGetterSelectors(getters, schemaG) {
+  const box = $("chartGetters");
+  if (!box) return;
+
+  const keys = Object.keys(getters || {})
+    .filter(k => isNumericGetter(getters[k]))
+    .sort();
+
+  box.innerHTML = keys.map(k => {
+    const checked = selectedGetters.has(k) ? "checked" : "";
+    const type = schemaG?.[k] || getters?.[k]?.data?.type || "?";
+    return `
+      <label class="chart-opt">
+        <input type="checkbox" data-getter="${k}" ${checked} />
+        <span class="mono">${k}</span>
+        <span class="small muted">(${type})</span>
+      </label>
+    `;
+  }).join("");
+
+  box.querySelectorAll("input[type='checkbox']").forEach(cb => {
+    cb.addEventListener("change", (e) => {
+      const key = e.target.dataset.getter;
+      if (e.target.checked) selectedGetters.add(key);
+      else selectedGetters.delete(key);
+      drawMultiGetterChart();
+    });
+  });
 }
 
 async function reloadAll() {
@@ -149,15 +249,19 @@ async function reloadAll() {
 
     setDot(status?.status === "ok");
 
-    // temp history
-    if (getters?.temp?.valid && getters?.temp?.data?.value != null) {
-      const v = Number(getters.temp.data.value);
+    // collect numeric getter history
+    Object.entries(getters || {}).forEach(([key, entry]) => {
+      if (!entry?.valid) return;
+      if (!isNumericGetter(entry)) return;
+
+      const v = Number(entry?.data?.value);
       if (Number.isFinite(v)) {
-        tempHistory.push({ t: Date.now(), v });
-        while (tempHistory.length > MAX_POINTS) tempHistory.shift();
+        historyPush(key, v);
       }
-    }
-    drawTempChart();
+    });
+
+    renderGetterSelectors(getters, schemaG);
+    drawMultiGetterChart();
 
     const gKeys = Object.keys(getters || {}).sort();
     $("gCount").textContent = String(gKeys.length);
@@ -166,28 +270,54 @@ async function reloadAll() {
       .filter(k => matchesSearch(s, k))
       .map(k => {
         const e = getters[k];
-        const type = schemaG?.[k] ? `<span class="pill muted">type:${schemaG[k]}</span>` : `<span class="pill muted">type:?</span>`;
+        const type = schemaG?.[k]
+          ? `<span class="pill muted">type:${schemaG[k]}</span>`
+          : `<span class="pill muted">type:?</span>`;
         const valid = badgeValid(!!e?.valid);
         const stamp = `<span class="pill muted">stamp:${fmtMs(e?.stampMs)}</span>`;
         const data = e?.data ? `${e.data.type}:${String(e.data.value)}` : "—";
-        return renderItem({
-          title: `<span class="mono">${k}</span>`,
-          meta: `${type} ${valid} ${stamp}`,
-          right: `<span class="pill mono">${data}</span>`,
-        });
+        const chartBtn = isNumericGetter(e)
+          ? `<label class="pill" style="cursor:pointer">
+               <input type="checkbox" data-inline-getter="${k}" ${selectedGetters.has(k) ? "checked" : ""} />
+               chart
+             </label>`
+          : "";
+
+        return `
+          <div class="item">
+            <div class="left">
+              <div class="k"><span class="mono">${k}</span></div>
+              <div class="meta">${type} ${valid} ${stamp}</div>
+              <div class="small muted mono">${data}</div>
+            </div>
+            <div class="right">${chartBtn}</div>
+          </div>
+        `;
       })
       .join("");
 
     $("getters").innerHTML = gHtml || `<div class="small muted">Нет данных</div>`;
 
+    $("getters").querySelectorAll("input[data-inline-getter]").forEach(cb => {
+      cb.addEventListener("change", (e) => {
+        const key = e.target.dataset.inlineGetter;
+        if (e.target.checked) selectedGetters.add(key);
+        else selectedGetters.delete(key);
+        renderGetterSelectors(getters, schemaG);
+        drawMultiGetterChart();
+      });
+    });
+
     $("eCount").textContent = String((executors || []).length);
 
     const eHtml = (executors || [])
       .filter(x => matchesSearch(s, x.name || x.id))
-      .sort((a,b) => (a.id ?? 0) - (b.id ?? 0))
+      .sort((a, b) => (a.id ?? 0) - (b.id ?? 0))
       .map(x => {
         const name = x.name || "";
-        const schemaT = schemaE?.[name] ? `<span class="pill muted">type:${schemaE[name]}</span>` : `<span class="pill muted">type:?</span>`;
+        const schemaT = schemaE?.[name]
+          ? `<span class="pill muted">type:${schemaE[name]}</span>`
+          : `<span class="pill muted">type:?</span>`;
         const valid = badgeValid(!!x.valid);
         const mode = badgeMode(x.mode);
         const stamp = `<span class="pill muted">stamp:${fmtMs(x.stampMs)}</span>`;

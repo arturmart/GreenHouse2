@@ -7,12 +7,15 @@
 #include <type_traits>
 #include <string>
 #include <stdexcept>
+#include <vector>
 
 #include "GlobalState.hpp"
 #include "Configurator.hpp"
 #include "Scheduler/Scheduler.hpp"
 #include "DataGetter/DataGetter.hpp"
 #include "DataGetter/DG_DS18B20.hpp"
+#include "DataGetter/DG_OWM_Weather.hpp"
+//#include "DataGetter/DG_OWM_WeatherString.hpp"
 #include "API/HttpServer.hpp"
 
 #include "Executor/Executor.hpp"
@@ -85,12 +88,98 @@ int main() {
     // DataGetter
     // ------------------------------------------------------------
     dg::DataGetter dg;
-    auto& ds = dg.emplace<dg::DG_DS18B20>("temp_ds18b20", "28-030397941733");
-
-    Field<float> tempField("temp");
-    ds.initRef(tempField);
-
     dg::ADataGetterStrategyBase::Ctx dgCtx;
+
+    // IMPORTANT:
+    // strategies keep pointers to Field<T>, so fields must live
+    // for the whole program lifetime.
+    std::vector<std::unique_ptr<Field<float>>>  getterFieldsFloat;
+    std::vector<std::unique_ptr<Field<double>>> getterFieldsDouble;
+    std::vector<std::unique_ptr<Field<int>>>    getterFieldsInt;
+    std::vector<std::unique_ptr<Field<bool>>>   getterFieldsBool;
+    std::vector<std::unique_ptr<Field<std::string>>> getterFieldsString;
+
+    // Create getter strategies from config
+    try {
+        for (const auto& kv : cfg.getterBindings()) {
+            const std::string& getterKey = kv.first;
+            const auto& bind = kv.second;
+
+            if (bind.strategy == "DG_DS18B20") {
+                if (bind.args.size() < 1) {
+                    throw std::runtime_error(
+                        "DG_DS18B20 requires sensor id for getter: " + getterKey
+                    );
+                }
+
+                // Current DG_DS18B20 returns float
+                auto& strat = dg.emplace<dg::DG_DS18B20>(
+                    "dg_" + getterKey,
+                    bind.args[0]
+                );
+
+                getterFieldsFloat.push_back(
+                    std::make_unique<Field<float>>(getterKey)
+                );
+
+                strat.initRef(*getterFieldsFloat.back());
+
+                std::cout << "[CFG] getter " << getterKey
+                          << " -> DG_DS18B20(" << bind.args[0] << ")\n";
+                continue;
+            }
+
+            if (bind.strategy == "STATIC_STRING") {
+                // optional future strategy
+                std::cout << "[CFG] getter " << getterKey
+                          << " uses STATIC_STRING (not instantiated in this main)\n";
+                continue;
+            }
+
+            if (bind.strategy == "DG_OWM_WEATHER") {
+                if (bind.args.size() < 5) {
+                    throw std::runtime_error(
+                        "DG_OWM_WEATHER requires: apiKey, lat, lon, fieldKey, cacheMs for getter: " + getterKey
+                    );
+                }
+
+                const std::string apiKey = bind.args[0];
+                const double lat = std::stod(bind.args[1]);
+                const double lon = std::stod(bind.args[2]);
+                const std::string fieldKey = bind.args[3];
+                const long long cacheMs = std::stoll(bind.args[4]);
+
+                auto& strat = dg.emplace<dg::DG_OWM_Weather>(
+                    "dg_" + getterKey,
+                    apiKey,
+                    lat,
+                    lon,
+                    fieldKey,
+                    cacheMs
+                );
+
+                getterFieldsDouble.push_back(
+                    std::make_unique<Field<double>>(getterKey)
+                );
+
+                strat.initRef(*getterFieldsDouble.back());
+
+                std::cout << "[CFG] getter " << getterKey
+                        << " -> DG_OWM_WEATHER(" << fieldKey
+                        << ", cacheMs=" << cacheMs << ")\n";
+                continue;
+            }
+
+            
+
+            std::cout << "[CFG] warning: unsupported getter strategy for "
+                      << getterKey << ": " << bind.strategy << "\n";
+        }
+    } catch (const std::exception& ex) {
+        std::cerr << "[CFG] getter binding init error: " << ex.what() << "\n";
+        return 1;
+    }
+
     dg.init(dgCtx);
 
     // ------------------------------------------------------------
@@ -302,7 +391,7 @@ int main() {
                       << " stampMs=" << e.stampMs
                       << " err=" << ex.what() << "\n";
         }
-    }, Scheduler::Ms(1000), "DG_DS18B20->GlobalState(temp)");
+    }, Scheduler::Ms(1000), "DG tick -> GlobalState");
 
     sch.addPeriodic([&]() {
         try {

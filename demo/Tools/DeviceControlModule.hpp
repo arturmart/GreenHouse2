@@ -17,7 +17,7 @@
 #include "CRC8.hpp"
 
 #ifndef DCM_DEBUG_CRC
-#define DCM_DEBUG_CRC 1
+#define DCM_DEBUG_CRC 0
 #endif
 
 #if DCM_DEBUG_CRC
