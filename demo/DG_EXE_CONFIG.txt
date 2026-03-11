@@ -2,6 +2,7 @@
 temp=double
 tempAPI=double
 date=string
+sysCpuUsage=double
 sysRamTotal=double
 sysRamFree=double
 sysRamAvailable=double
@@ -15,6 +16,7 @@ sysRamTotal=double,0
 sysRamFree=double,0
 sysRamAvailable=double,0
 sysRamProcess=double,0
+sysCpuUsage=double,0
 
 [getter_bindings]
 temp=DG_DS18B20,28-030397941733
@@ -23,6 +25,7 @@ sysRamTotal=DG_SYS_MEM,total
 sysRamFree=DG_SYS_MEM,free
 sysRamAvailable=DG_SYS_MEM,available
 sysRamProcess=DG_SYS_MEM,process
+sysCpuUsage=DG_SYS_CPU
 
 [schema_executors]
 LOW_DCM_D_0=bool

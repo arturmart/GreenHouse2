@@ -65,11 +65,74 @@
       justify-content: center;
       align-items: center;
     }
-    #ramDonut {
-      width: 400px;
-      height: 400px;
-      margin: auto;
+
+    .donut-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+      margin-top: 12px;
+    }
+
+    .donut-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+      border-radius: 14px;
+      background: rgba(0,0,0,.18);
+      border: 1px solid rgba(255,255,255,.08);
+      min-height: 290px;
+    }
+
+    .donut-title {
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+
+    .donut-subtitle {
+      font-size: 12px;
+      opacity: .75;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+
+    .donut-canvas {
+      width: 180px !important;
+      height: 160px !important;
+      max-width: 180px !important;
       display: block;
+      margin: 0 auto;
+      background: #0f152d;
+      border-radius: 12px;
+    }
+
+    .donut-legend {
+      width: 100%;
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .donut-legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+
+    .donut-color-box {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      flex: 0 0 12px;
+    }
+
+    .donut-footer {
+      font-size: 12px;
+      opacity: .75;
+      text-align: center;
+      margin-top: 8px;
     }
   </style>
 </head>
@@ -114,15 +177,12 @@
     <div class="card" style="margin-top:14px">
       <div class="row" style="justify-content:space-between">
         <div>
-          <div class="k">RAM Usage</div>
-          <div class="sub">Donut chart: used vs available</div>
+          <div class="k">System donuts</div>
+          <div class="sub">RAM / CPU / другие системные метрики</div>
         </div>
-        <div id="ramText" class="pill muted">—</div>
       </div>
     
-      <div class="row" style="justify-content:center; margin-top:10px;">
-        <canvas id="ramDonut" width="260" height="260"></canvas>
-      </div>
+      <div id="donutGrid" class="donut-grid"></div>
     </div>
 
     <div class="grid">

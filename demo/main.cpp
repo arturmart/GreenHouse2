@@ -16,6 +16,7 @@
 #include "DataGetter/DG_DS18B20.hpp"
 #include "DataGetter/DG_OWM_Weather.hpp"
 #include "DataGetter/DG_SYS_MEM.hpp"
+#include "DataGetter/DG_SYS_CPU.hpp"
 //#include "DataGetter/DG_OWM_WeatherString.hpp"
 #include "API/HttpServer.hpp"
 
@@ -215,6 +216,20 @@ int main() {
                 continue;
             }
 
+            if (bind.strategy == "DG_SYS_CPU"){
+                auto& strat = dg.emplace<dg::DG_SYS_CPU>("dg_" + getterKey);
+
+                getterFieldsDouble.push_back(
+                    std::make_unique<Field<double>>(getterKey)
+                );
+
+                strat.initRef(*getterFieldsDouble.back());
+
+                std::cout << "[CFG] getter " << getterKey
+                        << " -> DG_SYS_CPU\n";
+
+                continue;
+            }
             std::cout << "[CFG] warning: unsupported getter strategy for "
                       << getterKey << ": " << bind.strategy << "\n";
         }

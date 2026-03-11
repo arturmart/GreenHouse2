@@ -222,7 +222,6 @@ function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
-// 0 -> red, 1 -> green
 function usageColorByFreeRatio(freeRatio) {
   const t = clamp(freeRatio, 0, 1);
 
@@ -251,10 +250,29 @@ function formatKB(kb) {
   return `${mb.toFixed(1)} MB`;
 }
 
-function drawRamDonut(getters) {
-  const canvas = $("ramDonut");
-  const textBox = $("ramText");
-  if (!canvas || !textBox) return;
+function createDonutCard(id, cfg) {
+  return `
+    <div class="donut-item">
+      <div class="donut-title">${cfg.title || ""}</div>
+      <div class="donut-subtitle">${cfg.subtitle || ""}</div>
+      <canvas id="${id}" class="donut-canvas" width="200" height="180"></canvas>
+      <div class="donut-legend">
+        ${(cfg.parts || []).map(p => `
+          <div class="donut-legend-row">
+            <span class="donut-color-box"
+                  style="background:${p.color || "#999"};opacity:${p.alpha ?? 1}"></span>
+            <span>${p.label}: ${p.text ?? p.value}</span>
+          </div>
+        `).join("")}
+      </div>
+      <div class="donut-footer">${cfg.footerText || ""}</div>
+    </div>
+  `;
+}
+
+function drawDonut(canvasId, cfg) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
 
   const ctx = canvas.getContext("2d");
   const w = canvas.width;
@@ -264,141 +282,167 @@ function drawRamDonut(getters) {
   ctx.fillStyle = "#0f152d";
   ctx.fillRect(0, 0, w, h);
 
-  const total = Number(getters?.sysRamTotal?.data?.value);
-  const available = Number(getters?.sysRamAvailable?.data?.value);
-  const free = Number(getters?.sysRamFree?.data?.value);
-  const processRamRaw = Number(getters?.sysRamProcess?.data?.value);
+  const parts = (cfg.parts || []).filter(p => Number(p.value) > 0);
+  const sum = parts.reduce((a, p) => a + Number(p.value || 0), 0);
 
-  if (!Number.isFinite(total) || !Number.isFinite(available) || total <= 0) {
+  if (sum <= 0) {
     ctx.fillStyle = "rgba(255,255,255,.55)";
     ctx.font = "13px sans-serif";
-    ctx.fillText("RAM data unavailable", 40, h / 2);
-    textBox.textContent = "—";
+    ctx.fillText("No data", 70, h / 2);
     return;
   }
 
-  const used = Math.max(0, total - available);
-  const processRam = Number.isFinite(processRamRaw)
-    ? Math.max(0, Math.min(processRamRaw, used))
-    : 0;
-
-  const otherUsed = Math.max(0, used - processRam);
-  const availableSafe = Math.max(0, available);
-
-  const processPct = total > 0 ? (processRam / total) * 100 : 0;
-  const otherPct = total > 0 ? (otherUsed / total) * 100 : 0;
-  const availPct = total > 0 ? (availableSafe / total) * 100 : 0;
-  const usedPct = total > 0 ? (used / total) * 100 : 0;
-
-  const freeRatio = availableSafe / total;
-
-  // requested colors
-  const greenhouseColor = "#bd93f9";               // purple
-  const dynamicRamColor = usageColorByFreeRatio(freeRatio); // red -> green
-
   const cx = w / 2;
-  const cy = h / 2 - 10;
-
-  const radius = 58;
+  const cy = h / 2 - 8;
+  const radius = 54;
   const lineWidth = 18;
 
-  const sum = processRam + otherUsed + availableSafe;
-  const aProcess = sum > 0 ? (processRam / sum) * Math.PI * 2 : 0;
-  const aOther = sum > 0 ? (otherUsed / sum) * Math.PI * 2 : 0;
-  const aAvail = sum > 0 ? (availableSafe / sum) * Math.PI * 2 : 0;
-
-  let start = -Math.PI / 2;
-
-  // background ring
   ctx.beginPath();
   ctx.strokeStyle = "rgba(255,255,255,.08)";
   ctx.lineWidth = lineWidth;
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.stroke();
 
-  
- 
-  // Available
-  if (availableSafe > 0) {
+  let start = -Math.PI / 2;
+
+  parts.forEach(part => {
+    const angle = (Number(part.value) / sum) * Math.PI * 2;
+
     ctx.beginPath();
-    ctx.strokeStyle = dynamicRamColor;
+    ctx.strokeStyle = part.color || "#999";
+    ctx.globalAlpha = part.alpha ?? 1.0;
     ctx.lineWidth = lineWidth;
     ctx.lineCap = "round";
-    ctx.globalAlpha = 0.35;
-    ctx.arc(cx, cy, radius, start+ aOther + aProcess, start+ aOther + aProcess + aAvail);
+    ctx.arc(cx, cy, radius, start, start + angle);
     ctx.stroke();
     ctx.globalAlpha = 1.0;
-  }
-  // Other processes
-  if (otherUsed > 0) {
-    ctx.beginPath();
-    ctx.strokeStyle = dynamicRamColor;
-    ctx.lineWidth = lineWidth;
-    ctx.lineCap = "round";
-    ctx.arc(cx, cy, radius, start, start + aOther + aProcess);
-    ctx.stroke();
-  }
-   // GreenHouse process
-  if (processRam > 0) {
-    ctx.beginPath();
-    ctx.strokeStyle = greenhouseColor;
-    ctx.lineWidth = lineWidth;
-    ctx.lineCap = "round";
-    ctx.arc(cx, cy, radius, start, start + aProcess);
-    ctx.stroke();
 
-  }
+    start += angle;
+  });
 
-  
-  
-
-  // center text
   ctx.textAlign = "center";
   ctx.fillStyle = "#e7e9ee";
-  ctx.font = "bold 19px sans-serif";
-  ctx.fillText(`${usedPct.toFixed(0)}%`, cx, cy - 4);
+  ctx.font = "bold 18px sans-serif";
+  ctx.fillText(cfg.centerText || "", cx, cy - 4);
 
   ctx.font = "11px sans-serif";
-  ctx.fillStyle = "rgba(255,255,255,.75)";
-  ctx.fillText("RAM used", cx, cy + 14);
+  ctx.fillStyle = "rgba(255,255,255,.72)";
+  ctx.fillText(cfg.centerSubtext || "", cx, cy + 14);
+}
 
-  // legend
-  ctx.textAlign = "left";
-  ctx.font = "12px sans-serif";
+function renderDonutModules(donutConfigs) {
+  const grid = $("donutGrid");
+  if (!grid) return;
 
-  const y = h - 62;
+  grid.innerHTML = donutConfigs
+    .map((cfg, i) => createDonutCard(`donutCanvas_${i}`, cfg))
+    .join("");
 
-  ctx.fillStyle = greenhouseColor;
-  ctx.fillRect(20, y, 12, 12);
-  ctx.fillStyle = "#e7e9ee";
-  ctx.fillText(
-    `GreenHouse: ${formatKB(processRam)} (${processPct.toFixed(1)}%)`,
-    40,
-    y + 10
-  );
+  donutConfigs.forEach((cfg, i) => {
+    drawDonut(`donutCanvas_${i}`, cfg);
+  });
+}
 
-  ctx.fillStyle = dynamicRamColor;
-  ctx.fillRect(20, y + 20, 12, 12);
-  ctx.fillStyle = "#e7e9ee";
-  ctx.fillText(
-    `Other processes: ${formatKB(otherUsed)} (${otherPct.toFixed(1)}%)`,
-    40,
-    y + 30
-  );
+function makeRamDonut(getters) {
+  const total = Number(getters?.sysRamTotal?.data?.value);
+  const available = Number(getters?.sysRamAvailable?.data?.value);
+  const free = Number(getters?.sysRamFree?.data?.value);
+  const processRamRaw = Number(getters?.sysRamProcess?.data?.value);
 
-  ctx.fillStyle = dynamicRamColor;
-  ctx.globalAlpha = 0.35;
-  ctx.fillRect(20, y + 40, 12, 12);
-  ctx.globalAlpha = 1.0;
-  ctx.fillStyle = "#e7e9ee";
-  ctx.fillText(
-    `Available: ${formatKB(availableSafe)} (${availPct.toFixed(1)}%)`,
-    40,
-    y + 50
-  );
+  if (!Number.isFinite(total) || !Number.isFinite(available) || total <= 0) {
+    return {
+      title: "RAM",
+      subtitle: "System memory",
+      centerText: "—",
+      centerSubtext: "No data",
+      footerText: "RAM unavailable",
+      parts: []
+    };
+  }
 
-  textBox.textContent =
-    `Total ${formatKB(total)} | Free ${formatKB(free)} | Available ${formatKB(availableSafe)} (${availPct.toFixed(1)}%) | App ${formatKB(processRam)} (${processPct.toFixed(1)}%)`;
+  const used = Math.max(0, total - available);
+  const process = Number.isFinite(processRamRaw) ? Math.max(0, Math.min(processRamRaw, used)) : 0;
+  const other = Math.max(0, used - process);
+
+  const usedPct = (used / total) * 100;
+  const processPct = (process / total) * 100;
+  const otherPct = (other / total) * 100;
+  const availPct = (available / total) * 100;
+
+  const freeRatio = available / total;
+  const dynColor = usageColorByFreeRatio(freeRatio);
+
+  return {
+    title: "RAM",
+    subtitle: "GreenHouse / Other / Available",
+    centerText: `${usedPct.toFixed(0)}%`,
+    centerSubtext: "RAM used",
+    footerText:
+      `Total ${formatKB(total)} | Free ${formatKB(free)} | Available ${formatKB(available)}`,
+    parts: [
+      {
+        label: "GreenHouse",
+        value: process,
+        text: `${formatKB(process)} (${processPct.toFixed(1)}%)`,
+        color: "#bd93f9"
+      },
+      {
+        label: "Other processes",
+        value: other,
+        text: `${formatKB(other)} (${otherPct.toFixed(1)}%)`,
+        color: dynColor
+      },
+      {
+        label: "Available",
+        value: available,
+        text: `${formatKB(available)} (${availPct.toFixed(1)}%)`,
+        color: dynColor,
+        alpha: 0.35
+      }
+    ]
+  };
+}
+
+function makeCpuDonut(getters) {
+  const cpu = Number(getters?.sysCpuUsage?.data?.value);
+
+  if (!Number.isFinite(cpu)) {
+    return {
+      title: "CPU",
+      subtitle: "System CPU usage",
+      centerText: "—",
+      centerSubtext: "No data",
+      footerText: "CPU unavailable",
+      parts: []
+    };
+  }
+
+  const used = Math.max(0, Math.min(cpu, 100));
+  const idle = 100 - used;
+  const color = usageColorByFreeRatio(idle / 100);
+
+  return {
+    title: "CPU",
+    subtitle: "Used / Idle",
+    centerText: `${used.toFixed(0)}%`,
+    centerSubtext: "CPU used",
+    footerText: `Idle ${idle.toFixed(1)}%`,
+    parts: [
+      {
+        label: "Used",
+        value: used,
+        text: `${used.toFixed(1)}%`,
+        color: color
+      },
+      {
+        label: "Idle",
+        value: idle,
+        text: `${idle.toFixed(1)}%`,
+        color: color,
+        alpha: 0.35
+      }
+    ]
+  };
 }
 function renderGetterSelectors(getters, schemaG) {
   const box = $("chartGetters");
@@ -457,7 +501,13 @@ async function reloadAll() {
 
     renderGetterSelectors(getters, schemaG);
     drawMultiGetterChart();
-    drawRamDonut(getters);
+
+    const donutConfigs = [
+      makeRamDonut(getters),
+      makeCpuDonut(getters),
+    ];
+
+    renderDonutModules(donutConfigs);
 
     const gKeys = Object.keys(getters || {}).sort();
     $("gCount").textContent = String(gKeys.length);
