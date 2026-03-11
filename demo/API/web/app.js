@@ -214,6 +214,18 @@ function formatKB(kb) {
   return `${mb.toFixed(1)} MB`;
 }
 
+function formatBytesFromKB(kb) {
+  if (!Number.isFinite(kb)) return "—";
+
+  const mb = kb / 1024;
+  const gb = mb / 1024;
+  const tb = gb / 1024;
+
+  if (tb >= 1) return `${tb.toFixed(2)} TB`;
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  return `${mb.toFixed(1)} MB`;
+}
+
 function clamp(v, a, b) {
   return Math.max(a, Math.min(b, v));
 }
@@ -444,6 +456,54 @@ function makeCpuDonut(getters) {
     ]
   };
 }
+
+function makeDiskDonut(getters) {
+  const total = Number(getters?.sysDiskTotal?.data?.value);
+  const free = Number(getters?.sysDiskFree?.data?.value);
+
+  if (!Number.isFinite(total) || !Number.isFinite(free) || total <= 0) {
+    return {
+      title: "Disk",
+      subtitle: "Storage usage",
+      centerText: "—",
+      centerSubtext: "No data",
+      footerText: "Disk unavailable",
+      parts: []
+    };
+  }
+
+  const freeSafe = Math.max(0, Math.min(free, total));
+  const used = Math.max(0, total - freeSafe);
+
+  const usedPct = (used / total) * 100;
+  const freePct = (freeSafe / total) * 100;
+
+  const freeRatio = freeSafe / total;
+  const dynColor = usageColorByFreeRatio(freeRatio);
+
+  return {
+    title: "Disk",
+    subtitle: "Used / Free",
+    centerText: `${usedPct.toFixed(0)}%`,
+    centerSubtext: "Disk used",
+    footerText: `Total ${formatBytesFromKB(total)} | Free ${formatBytesFromKB(freeSafe)}`,
+    parts: [
+      {
+        label: "Used",
+        value: used,
+        text: `${formatBytesFromKB(used)} (${usedPct.toFixed(1)}%)`,
+        color: dynColor
+      },
+      {
+        label: "Free",
+        value: freeSafe,
+        text: `${formatBytesFromKB(freeSafe)} (${freePct.toFixed(1)}%)`,
+        color: dynColor,
+        alpha: 0.35
+      }
+    ]
+  };
+}
 function renderGetterSelectors(getters, schemaG) {
   const box = $("chartGetters");
   if (!box) return;
@@ -505,6 +565,7 @@ async function reloadAll() {
     const donutConfigs = [
       makeRamDonut(getters),
       makeCpuDonut(getters),
+      makeDiskDonut(getters),
     ];
 
     renderDonutModules(donutConfigs);

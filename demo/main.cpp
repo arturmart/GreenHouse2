@@ -17,6 +17,7 @@
 #include "DataGetter/DG_OWM_Weather.hpp"
 #include "DataGetter/DG_SYS_MEM.hpp"
 #include "DataGetter/DG_SYS_CPU.hpp"
+#include "DataGetter/DG_SYS_DISK.hpp"
 //#include "DataGetter/DG_OWM_WeatherString.hpp"
 #include "API/HttpServer.hpp"
 
@@ -230,8 +231,51 @@ int main() {
 
                 continue;
             }
-            std::cout << "[CFG] warning: unsupported getter strategy for "
-                      << getterKey << ": " << bind.strategy << "\n";
+            
+            if (bind.strategy == "DG_SYS_DISK") {
+                if (bind.args.size() < 1) {
+                    throw std::runtime_error(
+                        "DG_SYS_DISK requires field argument for getter: " + getterKey
+                    );
+                }
+
+                const std::string field = bind.args[0];
+                const std::string path = (bind.args.size() >= 2) ? bind.args[1] : "/";
+
+                dg::DG_SYS_DISK::Field diskField;
+
+                if (field == "total") {
+                    diskField = dg::DG_SYS_DISK::Field::TOTAL;
+                } else if (field == "free") {
+                    diskField = dg::DG_SYS_DISK::Field::FREE;
+                } else if (field == "available") {
+                    diskField = dg::DG_SYS_DISK::Field::AVAILABLE;
+                } else {
+                    throw std::runtime_error(
+                        "DG_SYS_DISK unknown field '" + field +
+                        "' for getter: " + getterKey
+                    );
+                }
+
+                auto& strat = dg.emplace<dg::DG_SYS_DISK>(
+                    "dg_" + getterKey,
+                    diskField,
+                    path
+                );
+
+                getterFieldsDouble.push_back(
+                    std::make_unique<Field<double>>(getterKey)
+                );
+
+                strat.initRef(*getterFieldsDouble.back());
+
+                std::cout << "[CFG] getter " << getterKey
+                        << " -> DG_SYS_DISK(" << field
+                        << ", path=" << path << ")\n";
+                continue;
+            }
+        std::cout << "[CFG] warning: unsupported getter strategy for "
+                    << getterKey << ": " << bind.strategy << "\n";
         }
     } catch (const std::exception& ex) {
         std::cerr << "[CFG] getter binding init error: " << ex.what() << "\n";
