@@ -29,6 +29,8 @@
 #include "Logic/RuleNode.hpp"
 #include "Logic/RuleTree.hpp"
 #include "Logic/RuleEngine.hpp"
+#include "API/JsonAPI.hpp"
+#include "Logic/LogicDebugJson.hpp"
 
 // ------------------------------------------------------------
 // Adapter: Field<T> -> GH_GlobalState getter map
@@ -420,6 +422,21 @@ int main() {
 
     logic::RuleEngine logicEngine(gs, logicTree);
 
+    api::JsonApi jsonApi;
+
+    jsonApi.registerGetter("logic/tree", [&]() {
+        return logic::treeStructureToJson(logicTree);
+    });
+
+    jsonApi.registerGetter("logic/runtime", [&]() {
+        return logic::treeRuntimeToJson(logicTree);
+    });
+
+    jsonApi.registerGetter("logic/full", [&]() {
+        return logic::treeToJson(logicTree);
+    });
+    
+
     // ------------------------------------------------------------
     // Desired-state API helpers
     // ------------------------------------------------------------
@@ -573,7 +590,7 @@ int main() {
     // ------------------------------------------------------------
     // HTTP server
     // ------------------------------------------------------------
-    auto httpServer = std::make_shared<GH_HttpServer>(8080, commandHandler);
+    auto httpServer = std::make_shared<GH_HttpServer>(8080, commandHandler, &jsonApi);
     httpServer->start();
 
     sch.addDelayed([httpServer]() {

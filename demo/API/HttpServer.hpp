@@ -13,6 +13,7 @@
 
 #include "../GlobalState.hpp"
 #include "../Tools/DateTime.hpp"
+#include "JsonAPI.hpp"
 
 namespace asio  = boost::asio;
 namespace beast = boost::beast;
@@ -197,10 +198,36 @@ parse_json_map(const std::string& s) {
 }
 
 // ------------------------------------------------------------
+// JsonApi helpers
+// ------------------------------------------------------------
+static inline std::string json_api_routes_to_json(const api::JsonApi& jsonApi) {
+    auto routes = jsonApi.listRoutes();
+
+    std::string out = "{\"routes\":[";
+    bool first = true;
+
+    for (const auto& r : routes) {
+        if (!first) out += ",";
+        first = false;
+
+        out += "{";
+        out += "\"name\":\"" + jescape(r.name) + "\"";
+        out += ",\"get\":" + std::string(r.hasGetter ? "true" : "false");
+        out += ",\"post\":" + std::string(r.hasSetter ? "true" : "false");
+        out += "}";
+    }
+
+    out += "]}";
+    return out;
+}
+
+// ------------------------------------------------------------
 // Router
 // ------------------------------------------------------------
 static inline http::response<http::string_body>
-handle_request(http::request<http::string_body>&& req, const CommandHandler& cmdHandler) {
+handle_request(http::request<http::string_body>&& req,
+               const CommandHandler& cmdHandler,
+               const api::JsonApi* jsonApi) {
     const std::string target = std::string(req.target());
     const auto method = req.method();
     auto& st = GH_GlobalState::instance();
@@ -281,21 +308,59 @@ handle_request(http::request<http::string_body>&& req, const CommandHandler& cmd
             out += "{";
             out += "\"id\":" + std::to_string(e.id);
             out += ",\"name\":\"" + jescape(e.name) + "\"";
-
-            // compatibility fields based on actual-state
             out += ",\"valid\":" + std::string(e.entry.valid ? "true" : "false");
             out += ",\"stampMs\":" + std::to_string(e.entry.stampMs);
             out += ",\"mode\":\"" + jescape(toString(e.entry.mode)) + "\"";
             out += ",\"data\":" + any_to_json(e.entry.value);
-
-            // new model
             out += ",\"desired\":" + desired_to_json(e.desired);
             out += ",\"actual\":" + actual_to_json(e.actual);
-
             out += "}";
         }
         out += "]";
         return make_json(req, http::status::ok, out);
+    }
+
+    // --------------------------------------------------------
+    // Generic JSON API
+    // GET /api/json
+    // GET /api/json/<name>
+    // POST /api/json/<name>
+    // --------------------------------------------------------
+    if (method == http::verb::get && target == "/api/json") {
+        if (!jsonApi) {
+            return make_json(req, http::status::service_unavailable,
+                "{\"error\":\"json api is not configured\"}");
+        }
+        return make_json(req, http::status::ok, json_api_routes_to_json(*jsonApi));
+    }
+
+    if (target.rfind("/api/json/", 0) == 0) {
+        if (!jsonApi) {
+            return make_json(req, http::status::service_unavailable,
+                "{\"error\":\"json api is not configured\"}");
+        }
+
+        const std::string name = target.substr(std::string("/api/json/").size());
+        if (name.empty()) {
+            return make_json(req, http::status::bad_request,
+                "{\"error\":\"empty json route name\"}");
+        }
+
+        try {
+            if (method == http::verb::get) {
+                return make_json(req, http::status::ok, jsonApi->get(name));
+            }
+
+            if (method == http::verb::post) {
+                return make_json(req, http::status::ok, jsonApi->set(name, req.body()));
+            }
+
+            return make_json(req, http::status::method_not_allowed,
+                "{\"error\":\"only GET/POST allowed for /api/json/<name>\"}");
+        } catch (const std::exception& ex) {
+            return make_json(req, http::status::bad_request,
+                std::string("{\"error\":\"") + jescape(ex.what()) + "\"}");
+        }
     }
 
     if (method == http::verb::get && target == "/") {
@@ -368,8 +433,8 @@ handle_request(http::request<http::string_body>&& req, const CommandHandler& cmd
 // ------------------------------------------------------------
 class HttpSession : public std::enable_shared_from_this<HttpSession> {
 public:
-    HttpSession(tcp::socket socket, CommandHandler cmdHandler)
-        : socket_(std::move(socket)), cmdHandler_(std::move(cmdHandler)) {}
+    HttpSession(tcp::socket socket, CommandHandler cmdHandler, const api::JsonApi* jsonApi)
+        : socket_(std::move(socket)), cmdHandler_(std::move(cmdHandler)), jsonApi_(jsonApi) {}
 
     void run() { do_read(); }
 
@@ -379,6 +444,7 @@ private:
     http::request<http::string_body> req_;
     std::shared_ptr<void> hold_;
     CommandHandler cmdHandler_;
+    const api::JsonApi* jsonApi_{nullptr};
 
     void do_read() {
         req_ = {};
@@ -393,7 +459,7 @@ private:
         if (ec) return;
 
         auto res = std::make_shared<http::response<http::string_body>>(
-            handle_request(std::move(req_), cmdHandler_)
+            handle_request(std::move(req_), cmdHandler_, jsonApi_)
         );
         hold_ = res;
 
@@ -418,8 +484,11 @@ private:
 
 class Listener : public std::enable_shared_from_this<Listener> {
 public:
-    Listener(asio::io_context& ioc, tcp::endpoint ep, CommandHandler cmdHandler)
-        : ioc_(ioc), acceptor_(ioc), cmdHandler_(std::move(cmdHandler)) {
+    Listener(asio::io_context& ioc,
+             tcp::endpoint ep,
+             CommandHandler cmdHandler,
+             const api::JsonApi* jsonApi)
+        : ioc_(ioc), acceptor_(ioc), cmdHandler_(std::move(cmdHandler)), jsonApi_(jsonApi) {
         beast::error_code ec;
         acceptor_.open(ep.protocol(), ec);
         acceptor_.set_option(asio::socket_base::reuse_address(true), ec);
@@ -433,13 +502,18 @@ private:
     asio::io_context& ioc_;
     tcp::acceptor acceptor_;
     CommandHandler cmdHandler_;
+    const api::JsonApi* jsonApi_{nullptr};
 
     void do_accept() {
         acceptor_.async_accept(
             asio::make_strand(ioc_),
             [self = shared_from_this()](beast::error_code ec, tcp::socket s) {
                 if (!ec) {
-                    std::make_shared<HttpSession>(std::move(s), self->cmdHandler_)->run();
+                    std::make_shared<HttpSession>(
+                        std::move(s),
+                        self->cmdHandler_,
+                        self->jsonApi_
+                    )->run();
                 }
                 self->do_accept();
             });
@@ -448,12 +522,14 @@ private:
 
 class GH_HttpServer {
 public:
-    explicit GH_HttpServer(uint16_t port, CommandHandler cmdHandler = {})
-        : ioc_(1), port_(port), cmdHandler_(std::move(cmdHandler)) {}
+    explicit GH_HttpServer(uint16_t port,
+                           CommandHandler cmdHandler = {},
+                           const api::JsonApi* jsonApi = nullptr)
+        : ioc_(1), port_(port), cmdHandler_(std::move(cmdHandler)), jsonApi_(jsonApi) {}
 
     void start() {
         auto ep = tcp::endpoint(tcp::v4(), port_);
-        listener_ = std::make_shared<Listener>(ioc_, ep, cmdHandler_);
+        listener_ = std::make_shared<Listener>(ioc_, ep, cmdHandler_, jsonApi_);
         listener_->run();
     }
 
@@ -465,4 +541,5 @@ private:
     uint16_t port_{8080};
     std::shared_ptr<Listener> listener_;
     CommandHandler cmdHandler_;
+    const api::JsonApi* jsonApi_{nullptr};
 };
