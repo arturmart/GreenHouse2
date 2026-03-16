@@ -25,6 +25,11 @@
 #include "Executor/EX_DeviceControlModule.hpp"
 #include "Executor/ExecutorStateBridge.hpp"
 
+#include "Logic/ActionModel.hpp"
+#include "Logic/RuleNode.hpp"
+#include "Logic/RuleTree.hpp"
+#include "Logic/RuleEngine.hpp"
+
 // ------------------------------------------------------------
 // Adapter: Field<T> -> GH_GlobalState getter map
 // ------------------------------------------------------------
@@ -354,7 +359,66 @@ int main() {
         "flush_all_on_tick", false
     );
     control::ExecutorStateBridge execBridge(gs, executor);
+    // ------------------------------------------------------------
+    // LogicEngine manual test tree
+    // ------------------------------------------------------------
+    logic::RuleTree logicTree;
 
+    {
+        using logic::ActionModel;
+        using logic::ActionValueType;
+        using logic::RuleNode;
+        using logic::TriggerMode;
+
+        auto root = std::make_unique<RuleNode>(
+            "main",
+            "always",
+            std::vector<std::string>{},
+            std::vector<ActionModel>{}
+        );
+
+        // temp > 26  -> LOW_DCM_D_0 = true
+        {
+            std::vector<ActionModel> actions;
+            actions.push_back(ActionModel{
+                "LOW_DCM_D_0",
+                ActionValueType::BOOL,
+                "true",
+                TriggerMode::ON_ENTER,
+                true
+            });
+
+            root->addChild(std::make_unique<RuleNode>(
+                "Cooler1On",
+                "gt",
+                std::vector<std::string>{"temp", "26"},
+                actions
+            ));
+        }
+
+        // temp < 24  -> LOW_DCM_D_0 = false
+        {
+            std::vector<ActionModel> actions;
+            actions.push_back(ActionModel{
+                "LOW_DCM_D_0",
+                ActionValueType::BOOL,
+                "false",
+                TriggerMode::ON_ENTER,
+                true
+            });
+
+            root->addChild(std::make_unique<RuleNode>(
+                "Cooler1Off",
+                "lt",
+                std::vector<std::string>{"temp", "24"},
+                actions
+            ));
+        }
+
+        logicTree.setRoot(std::move(root));
+    }
+
+    logic::RuleEngine logicEngine(gs, logicTree);
 
     // ------------------------------------------------------------
     // Desired-state API helpers
@@ -378,24 +442,33 @@ int main() {
 
             if (action == "mode") {
                 GH_MODE m;
+
                 if (value == "manual" || value == "MANUAL" || value == "0") {
                     m = GH_MODE::MANUAL;
-                } else if (value == "auto" || value == "AUTO" || value == "1") {
+                }
+                else if (value == "auto" || value == "AUTO" || value == "1") {
                     m = GH_MODE::AUTO;
-                } else {
+                }
+                else {
                     throw std::runtime_error("mode must be manual/auto");
                 }
 
                 setExecDesiredModeByName(name, m, "api");
 
+                // actual mode switches immediately
+                gs.setExecActualMode(id, m);
+
+                // IMPORTANT: when returning to AUTO force rule refresh
+                if (m == GH_MODE::AUTO) {
+                    logicEngine.requestRefresh();
+                }
+
                 return std::string("{\"ok\":true,\"name\":\"") + name +
-                       "\",\"action\":\"mode\",\"value\":\"" + toString(m) + "\"}";
+                    "\",\"action\":\"mode\",\"value\":\"" + toString(m) + "\"}";
             }
 
-            auto desired = gs.getExecDesiredEntry(id);
-            auto actual  = gs.getExecActualEntry(id);
-
-            GH_MODE effectiveMode = desired.valid ? desired.mode : actual.mode;
+            auto actual = gs.getExecActualEntry(id);
+            GH_MODE effectiveMode = actual.mode;
 
             if (action == "on" || action == "off") {
                 if (effectiveMode != GH_MODE::MANUAL) {
@@ -459,6 +532,16 @@ int main() {
             std::cout << "[DG] error: " << ex.what() << "\n";
         }
     }, Scheduler::Ms(1000), "DG tick -> GlobalState");
+
+    sch.addPeriodic([&]() {
+        try {
+            logicEngine.tick();
+        } catch (const std::exception& ex) {
+            std::cout << "[LOGIC] tick error: " << ex.what() << "\n";
+        } catch (...) {
+            std::cout << "[LOGIC] tick unknown error\n";
+        }
+    }, Scheduler::Ms(500), "Logic.tick()");
 
     sch.addPeriodic([&]() {
         execBridge.tick();
