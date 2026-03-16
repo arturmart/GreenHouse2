@@ -82,6 +82,18 @@ function isNumericGetter(entry) {
   const t = entry?.data?.type;
   return t === "int" || t === "double";
 }
+function formatGetterData(entry) {
+  if (!entry?.data) return "—";
+
+  const t = entry.data.type;
+  const v = entry.data.value;
+
+  if (t === "time") {
+    return `time:${entry.data.formatted || String(v)}`;
+  }
+
+  return `${t}:${String(v)}`;
+}
 
 function historyPush(getterKey, value) {
   if (!historyMap[getterKey]) {
@@ -582,7 +594,7 @@ async function reloadAll() {
           : `<span class="pill muted">type:?</span>`;
         const valid = badgeValid(!!e?.valid);
         const stamp = `<span class="pill muted">stamp:${fmtMs(e?.stampMs)}</span>`;
-        const data = e?.data ? `${e.data.type}:${String(e.data.value)}` : "—";
+        const data = formatGetterData(e);
         const chartBtn = isNumericGetter(e)
           ? `<label class="pill" style="cursor:pointer">
                <input type="checkbox" data-inline-getter="${k}" ${selectedGetters.has(k) ? "checked" : ""} />

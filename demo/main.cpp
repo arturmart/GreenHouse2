@@ -18,6 +18,7 @@
 #include "DataGetter/DG_SYS_MEM.hpp"
 #include "DataGetter/DG_SYS_CPU.hpp"
 #include "DataGetter/DG_SYS_DISK.hpp"
+#include "DataGetter/DG_SYS_TIME.hpp"
 //#include "DataGetter/DG_OWM_WeatherString.hpp"
 #include "API/HttpServer.hpp"
 
@@ -101,6 +102,8 @@ int main() {
     std::vector<std::unique_ptr<Field<int>>>    getterFieldsInt;
     std::vector<std::unique_ptr<Field<bool>>>   getterFieldsBool;
     std::vector<std::unique_ptr<Field<std::string>>> getterFieldsString;
+    //std::vector<std::unique_ptr<Field<long long>>> getterFieldsLongLong;
+    std::vector<std::unique_ptr<Field<tools::UnixMs>>> getterFieldsTime;
 
     // Create getter strategies from config
     try {
@@ -282,8 +285,25 @@ int main() {
         return 1;
     }
 
+    // ------------------------------------------------------------
+    // Manual DataGetter strategies (without Configurator)
+    // ------------------------------------------------------------
+    {
+        auto& strat = dg.emplace<dg::DG_TIME>("dg_time");
+
+        getterFieldsTime.push_back(
+            std::make_unique<Field<tools::UnixMs>>("time")
+        );
+
+        strat.initRef(*getterFieldsTime.back());
+
+        std::cout << "[MAIN] getter time -> DG_TIME\n";
+    }
+
+
     dg.init(dgCtx);
 
+    
     // ------------------------------------------------------------
     // Executor + DCM
     // ------------------------------------------------------------

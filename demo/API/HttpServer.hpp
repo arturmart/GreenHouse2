@@ -12,6 +12,7 @@
 #include <sstream>
 
 #include "../GlobalState.hpp"
+#include "../Tools/DateTime.hpp"
 
 namespace asio  = boost::asio;
 namespace beast = boost::beast;
@@ -71,6 +72,15 @@ static inline std::string any_to_json(const std::any& a) {
         int v = std::any_cast<int>(a);
         return "{\"type\":\"int\",\"value\":" + std::to_string(v) + "}";
     }
+    if (t == typeid(tools::UnixMs)) {
+        const auto& v = std::any_cast<const tools::UnixMs&>(a);
+
+        return std::string("{\"type\":\"time\",\"value\":")
+            + std::to_string(v.value)
+            + ",\"formatted\":\""
+            + jescape(tools::unixMsToString(v.value))
+            + "\"}";
+    }
     if (t == typeid(double)) {
         double v = std::any_cast<double>(a);
         return "{\"type\":\"double\",\"value\":" + std::to_string(v) + "}";
@@ -79,6 +89,7 @@ static inline std::string any_to_json(const std::any& a) {
         std::string v = jescape(std::any_cast<std::string>(a));
         return "{\"type\":\"string\",\"value\":\"" + v + "\"}";
     }
+
     return "{\"type\":\"unknown\",\"value\":null}";
 }
 

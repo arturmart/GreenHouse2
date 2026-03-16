@@ -1,7 +1,6 @@
 [schema_getters]
 temp=double
 tempAPI=double
-date=string
 sysRamTotal=double
 sysRamFree=double
 sysRamAvailable=double
@@ -15,7 +14,6 @@ sysDiskAvailable=double
 [getters]
 temp=double,0.0
 tempAPI=double,0.0
-date=string,2026-02-13 21:00
 sysRamTotal=double,0
 sysRamFree=double,0
 sysRamAvailable=double,0
