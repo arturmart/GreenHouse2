@@ -8,6 +8,7 @@
 #include <shared_mutex>
 #include <chrono>
 #include <stdexcept>
+#include <utility>
 
 enum class GH_MODE : uint8_t { MANUAL = 0, AUTO = 1 };
 
@@ -17,11 +18,9 @@ inline std::string toString(GH_MODE m) {
 
 class GH_GlobalState final {
 public:
-
     // ------------------------------------------------------------
     // Value type
     // ------------------------------------------------------------
-
     enum class ValueType : uint8_t {
         BOOL,
         INT,
@@ -32,7 +31,6 @@ public:
     // ------------------------------------------------------------
     // Getter entry
     // ------------------------------------------------------------
-
     struct GetterEntry {
         std::any value;
         bool valid{false};
@@ -40,9 +38,8 @@ public:
     };
 
     // ------------------------------------------------------------
-    // Executor entry
+    // Executor entries
     // ------------------------------------------------------------
-
     struct ExecEntry {
         std::any value;
         GH_MODE mode{GH_MODE::MANUAL};
@@ -50,10 +47,33 @@ public:
         uint64_t stampMs{0};
     };
 
+    struct ExecDesiredEntry {
+        std::any value;
+        GH_MODE mode{GH_MODE::MANUAL};
+        bool valid{false};
+        bool dirty{false};
+        std::string lastWriter{"unknown"};
+        uint64_t stampMs{0};
+    };
+
+    struct ExecActualEntry {
+        std::any value;
+        GH_MODE mode{GH_MODE::MANUAL};
+        bool valid{false};
+        bool pending{false};
+        std::string lastError{};
+        uint64_t stampMs{0};
+        uint64_t lastAppliedMs{0};
+    };
+
+    struct ExecFullEntry {
+        ExecDesiredEntry desired;
+        ExecActualEntry actual;
+    };
+
     // ------------------------------------------------------------
     // DCM binding
     // ------------------------------------------------------------
-
     struct DcmBinding {
         int tableId{0};
         int index{0};
@@ -63,18 +83,16 @@ public:
     // ------------------------------------------------------------
     // Type aliases
     // ------------------------------------------------------------
-
-    using ExecMap          = std::unordered_map<int, ExecEntry>;
     using NameToId         = std::unordered_map<std::string, int>;
     using GetterMap        = std::unordered_map<std::string, GetterEntry>;
     using GetterSchema     = std::unordered_map<std::string, ValueType>;
     using ExecSchemaByName = std::unordered_map<std::string, ValueType>;
     using DcmBindingMap    = std::unordered_map<std::string, DcmBinding>;
+    using ExecMap          = std::unordered_map<int, ExecFullEntry>;
 
     // ------------------------------------------------------------
     // Singleton
     // ------------------------------------------------------------
-
     static GH_GlobalState& instance() {
         static GH_GlobalState inst;
         return inst;
@@ -86,10 +104,8 @@ public:
     // ------------------------------------------------------------
     // Time
     // ------------------------------------------------------------
-
     static uint64_t nowMs() {
         using namespace std::chrono;
-
         return static_cast<uint64_t>(
             duration_cast<milliseconds>(
                 steady_clock::now().time_since_epoch()
@@ -100,7 +116,6 @@ public:
     // ------------------------------------------------------------
     // Schema registration
     // ------------------------------------------------------------
-
     void setGetterSchema(const std::string& key, ValueType t) {
         std::unique_lock lk(schema_mtx_);
         getter_schema_[key] = t;
@@ -122,9 +137,8 @@ public:
     }
 
     // ------------------------------------------------------------
-    // Read helpers
+    // Getter read helpers
     // ------------------------------------------------------------
-
     template<class T>
     T getGetterAs(const std::string& key) const {
         std::shared_lock lk(getter_mtx_);
@@ -143,55 +157,19 @@ public:
         std::shared_lock lk(getter_mtx_);
 
         auto it = getter_status_.find(key);
-
         if (it == getter_status_.end())
             throw std::runtime_error("Getter key not found: " + key);
 
         return it->second;
     }
 
-    ExecEntry getExecEntry(int id) const {
-        std::shared_lock lk(exec_mtx_);
-
-        auto it = executor_status_.find(id);
-
-        if (it == executor_status_.end())
-            throw std::runtime_error("Executor id not found");
-
-        return it->second;
-    }
-
-    template<class T>
-    T getExecValueAs(int id) const {
-        std::shared_lock lk(exec_mtx_);
-
-        auto it = executor_status_.find(id);
-
-        if (it == executor_status_.end())
-            throw std::runtime_error("Executor id not found");
-
-        if (!it->second.valid)
-            throw std::runtime_error("Executor value invalid");
-
-        return std::any_cast<T>(it->second.value);
-    }
-
-    GH_MODE getExecMode(int id) const {
-        std::shared_lock lk(exec_mtx_);
-
-        auto it = executor_status_.find(id);
-
-        if (it == executor_status_.end())
-            throw std::runtime_error("Executor id not found");
-
-        return it->second.mode;
-    }
-
+    // ------------------------------------------------------------
+    // Executor name/id helpers
+    // ------------------------------------------------------------
     int execIdByName(const std::string& name) const {
         std::shared_lock lk(exec_mtx_);
 
         auto it = exec_name_to_id_.find(name);
-
         if (it == exec_name_to_id_.end())
             throw std::runtime_error("Executor name not found: " + name);
 
@@ -202,7 +180,6 @@ public:
         std::shared_lock lk(schema_mtx_);
 
         auto it = dcm_bindings_.find(name);
-
         if (it == dcm_bindings_.end())
             throw std::runtime_error("DCM binding not found for executor: " + name);
 
@@ -210,9 +187,79 @@ public:
     }
 
     // ------------------------------------------------------------
+    // Executor read helpers (NEW)
+    // ------------------------------------------------------------
+    ExecFullEntry getExecFullEntry(int id) const {
+        std::shared_lock lk(exec_mtx_);
+
+        auto it = executor_status_.find(id);
+        if (it == executor_status_.end())
+            throw std::runtime_error("Executor id not found");
+
+        return it->second;
+    }
+
+    ExecDesiredEntry getExecDesiredEntry(int id) const {
+        std::shared_lock lk(exec_mtx_);
+
+        auto it = executor_status_.find(id);
+        if (it == executor_status_.end())
+            throw std::runtime_error("Executor id not found");
+
+        return it->second.desired;
+    }
+
+    ExecActualEntry getExecActualEntry(int id) const {
+        std::shared_lock lk(exec_mtx_);
+
+        auto it = executor_status_.find(id);
+        if (it == executor_status_.end())
+            throw std::runtime_error("Executor id not found");
+
+        return it->second.actual;
+    }
+
+    bool isExecDirty(int id) const {
+        std::shared_lock lk(exec_mtx_);
+
+        auto it = executor_status_.find(id);
+        if (it == executor_status_.end())
+            throw std::runtime_error("Executor id not found");
+
+        return it->second.desired.dirty;
+    }
+
+    // ------------------------------------------------------------
+    // Compatibility read helpers (OLD API -> actual state)
+    // ------------------------------------------------------------
+    ExecEntry getExecEntry(int id) const {
+        auto a = getExecActualEntry(id);
+
+        ExecEntry e;
+        e.value = a.value;
+        e.mode = a.mode;
+        e.valid = a.valid;
+        e.stampMs = a.stampMs;
+        return e;
+    }
+
+    template<class T>
+    T getExecValueAs(int id) const {
+        auto a = getExecActualEntry(id);
+
+        if (!a.valid)
+            throw std::runtime_error("Executor value invalid");
+
+        return std::any_cast<T>(a.value);
+    }
+
+    GH_MODE getExecMode(int id) const {
+        return getExecActualEntry(id).mode;
+    }
+
+    // ------------------------------------------------------------
     // Snapshots
     // ------------------------------------------------------------
-
     GetterSchema snapshotGetterSchema() const {
         std::shared_lock lk(schema_mtx_);
         return getter_schema_;
@@ -234,100 +281,180 @@ public:
     }
 
     struct ExecApiEntry {
-        int id;
+        int id{0};
         std::string name;
-        ExecEntry entry;
+        ExecEntry entry;               // compatibility actual state
+        ExecDesiredEntry desired;      // new
+        ExecActualEntry actual;        // new
     };
 
     std::vector<ExecApiEntry> snapshotExecutors() const {
-
         std::shared_lock lk(exec_mtx_);
 
         std::unordered_map<int, std::string> id2name;
-
-        for (const auto& kv : exec_name_to_id_)
+        for (const auto& kv : exec_name_to_id_) {
             id2name[kv.second] = kv.first;
+        }
 
         std::vector<ExecApiEntry> out;
+        out.reserve(executor_status_.size());
 
         for (const auto& kv : executor_status_) {
-
             ExecApiEntry e;
-
             e.id = kv.first;
 
             auto it = id2name.find(kv.first);
-
             if (it != id2name.end())
                 e.name = it->second;
 
-            e.entry = kv.second;
+            e.desired = kv.second.desired;
+            e.actual = kv.second.actual;
 
-            out.push_back(e);
+            e.entry.value = kv.second.actual.value;
+            e.entry.mode = kv.second.actual.mode;
+            e.entry.valid = kv.second.actual.valid;
+            e.entry.stampMs = kv.second.actual.stampMs;
+
+            out.push_back(std::move(e));
         }
 
         return out;
     }
 
     // ------------------------------------------------------------
-    // Write helpers
+    // Getter write helpers
     // ------------------------------------------------------------
-
     void setGetter(const std::string& key, std::any value) {
-
         std::unique_lock lk(getter_mtx_);
 
         auto& e = getter_status_[key];
-
         e.value = std::move(value);
         e.valid = true;
         e.stampMs = nowMs();
     }
 
     void setGetterInvalid(const std::string& key) {
-
         std::unique_lock lk(getter_mtx_);
 
         auto& e = getter_status_[key];
-
         e.valid = false;
         e.stampMs = nowMs();
     }
 
-    void setExec(int id, std::any value, GH_MODE mode) {
-
+    // ------------------------------------------------------------
+    // Executor desired write helpers (NEW)
+    // ------------------------------------------------------------
+    void setExecDesired(int id, std::any value, GH_MODE mode,
+                        std::string writer = "unknown",
+                        bool dirty = true) {
         std::unique_lock lk(exec_mtx_);
 
         auto& e = executor_status_[id];
+        e.desired.value = std::move(value);
+        e.desired.mode = mode;
+        e.desired.valid = true;
+        e.desired.dirty = dirty;
+        e.desired.lastWriter = std::move(writer);
+        e.desired.stampMs = nowMs();
+    }
 
-        e.value = std::move(value);
-        e.mode = mode;
-        e.valid = true;
-        e.stampMs = nowMs();
+    void setExecDesiredInvalid(int id, std::string writer = "unknown", bool dirty = true) {
+        std::unique_lock lk(exec_mtx_);
+
+        auto& e = executor_status_[id];
+        e.desired.valid = false;
+        e.desired.dirty = dirty;
+        e.desired.lastWriter = std::move(writer);
+        e.desired.stampMs = nowMs();
+    }
+
+    void setExecDesiredMode(int id, GH_MODE mode, std::string writer = "unknown", bool dirty = true) {
+        std::unique_lock lk(exec_mtx_);
+
+        auto& e = executor_status_[id];
+        e.desired.mode = mode;
+        e.desired.dirty = dirty;
+        e.desired.lastWriter = std::move(writer);
+        e.desired.stampMs = nowMs();
+    }
+
+    void markExecDirty(int id, bool dirty = true) {
+        std::unique_lock lk(exec_mtx_);
+        executor_status_[id].desired.dirty = dirty;
+    }
+
+    // ------------------------------------------------------------
+    // Executor actual write helpers (NEW)
+    // ------------------------------------------------------------
+    void setExecActual(int id, std::any value, GH_MODE mode, bool pending = false) {
+        std::unique_lock lk(exec_mtx_);
+
+        auto& e = executor_status_[id];
+        e.actual.value = std::move(value);
+        e.actual.mode = mode;
+        e.actual.valid = true;
+        e.actual.pending = pending;
+        e.actual.lastError.clear();
+        e.actual.stampMs = nowMs();
+        e.actual.lastAppliedMs = e.actual.stampMs;
+    }
+
+    void setExecActualInvalid(int id, std::string err = {}) {
+        std::unique_lock lk(exec_mtx_);
+
+        auto& e = executor_status_[id];
+        e.actual.valid = false;
+        e.actual.pending = false;
+        e.actual.lastError = std::move(err);
+        e.actual.stampMs = nowMs();
+    }
+
+    void setExecActualMode(int id, GH_MODE mode) {
+        std::unique_lock lk(exec_mtx_);
+
+        auto& e = executor_status_[id];
+        e.actual.mode = mode;
+        e.actual.stampMs = nowMs();
+    }
+
+    void setExecPending(int id, bool pending) {
+        std::unique_lock lk(exec_mtx_);
+
+        auto& e = executor_status_[id];
+        e.actual.pending = pending;
+        e.actual.stampMs = nowMs();
+    }
+
+    void setExecApplyError(int id, const std::string& err) {
+        std::unique_lock lk(exec_mtx_);
+
+        auto& e = executor_status_[id];
+        e.actual.lastError = err;
+        e.actual.pending = false;
+        e.actual.stampMs = nowMs();
+    }
+
+    void clearExecApplyError(int id) {
+        std::unique_lock lk(exec_mtx_);
+        executor_status_[id].actual.lastError.clear();
+    }
+
+    // ------------------------------------------------------------
+    // Compatibility write helpers (OLD API -> actual state only)
+    // ------------------------------------------------------------
+    void setExec(int id, std::any value, GH_MODE mode) {
+        setExecActual(id, std::move(value), mode, false);
     }
 
     void setExecInvalid(int id) {
-
-        std::unique_lock lk(exec_mtx_);
-
-        auto& e = executor_status_[id];
-
-        e.valid = false;
-        e.stampMs = nowMs();
+        setExecActualInvalid(id);
     }
 
     void setExecMode(int id, GH_MODE mode) {
-
-        std::unique_lock lk(exec_mtx_);
-
-        auto& e = executor_status_[id];
-
-        e.mode = mode;
-        e.stampMs = nowMs();
+        setExecActualMode(id, mode);
     }
 
 private:
-
     GH_GlobalState() = default;
 
     mutable std::shared_mutex exec_mtx_;

@@ -6,13 +6,15 @@ $("apiBase").textContent = apiBase;
 
 let timer = null;
 
-const historyMap = {};          // { getterKey: [{t, v}, ...] }
+const historyMap = {};
 const selectedGetters = new Set(["temp"]);
 const MAX_POINTS = 120;
 
 function setDot(ok) {
   dot.style.background = ok ? "#49f28a" : "#ff6b6b";
-  dot.style.boxShadow = ok ? "0 0 14px rgba(73,242,138,.45)" : "0 0 14px rgba(255,107,107,.45)";
+  dot.style.boxShadow = ok
+    ? "0 0 14px rgba(73,242,138,.45)"
+    : "0 0 14px rgba(255,107,107,.45)";
 }
 
 function fmtMs(ms) {
@@ -21,7 +23,21 @@ function fmtMs(ms) {
 }
 
 function badgeValid(valid) {
-  return valid ? `<span class="pill good">valid</span>` : `<span class="pill bad">invalid</span>`;
+  return valid
+    ? `<span class="pill good">valid</span>`
+    : `<span class="pill bad">invalid</span>`;
+}
+
+function badgeDirty(dirty) {
+  return dirty
+    ? `<span class="pill warn">dirty</span>`
+    : `<span class="pill muted">clean</span>`;
+}
+
+function badgePending(pending) {
+  return pending
+    ? `<span class="pill warn">pending</span>`
+    : `<span class="pill good">idle</span>`;
 }
 
 function badgeMode(mode) {
@@ -82,6 +98,7 @@ function isNumericGetter(entry) {
   const t = entry?.data?.type;
   return t === "int" || t === "double";
 }
+
 function formatGetterData(entry) {
   if (!entry?.data) return "—";
 
@@ -93,6 +110,26 @@ function formatGetterData(entry) {
   }
 
   return `${t}:${String(v)}`;
+}
+
+function formatAnyData(data) {
+  if (!data) return "—";
+
+  if (data.type === "time") {
+    return `time:${data.formatted || String(data.value)}`;
+  }
+
+  return `${data.type}:${String(data.value)}`;
+}
+
+function safeUpper(v) {
+  return String(v || "").toUpperCase();
+}
+
+function effectiveMode(executor) {
+  const dm = executor?.desired?.mode;
+  const am = executor?.actual?.mode;
+  return dm || am || executor?.mode || "";
 }
 
 function historyPush(getterKey, value) {
@@ -131,7 +168,9 @@ function drawMultiGetterChart() {
   ctx.fillStyle = "#0f152d";
   ctx.fillRect(0, 0, w, h);
 
-  const selectedKeys = [...selectedGetters].filter(k => historyMap[k] && historyMap[k].length > 0);
+  const selectedKeys = [...selectedGetters].filter(
+    k => historyMap[k] && historyMap[k].length > 0
+  );
 
   ctx.strokeStyle = "rgba(255,255,255,.08)";
   for (let i = 0; i < 5; i++) {
@@ -199,7 +238,6 @@ function drawMultiGetterChart() {
     ctx.stroke();
   });
 
-  // legend
   let legendX = 60;
   const legendY = 20;
 
@@ -216,6 +254,7 @@ function drawMultiGetterChart() {
     legendX += 90;
   });
 }
+
 function formatKB(kb) {
   if (!Number.isFinite(kb)) return "—";
 
@@ -262,16 +301,6 @@ function usageColorByFreeRatio(freeRatio) {
   }
 
   return `rgb(${r},${g},${b})`;
-}
-
-function formatKB(kb) {
-  if (!Number.isFinite(kb)) return "—";
-
-  const mb = kb / 1024;
-  const gb = mb / 1024;
-
-  if (gb >= 1) return `${gb.toFixed(2)} GB`;
-  return `${mb.toFixed(1)} MB`;
 }
 
 function createDonutCard(id, cfg) {
@@ -516,6 +545,7 @@ function makeDiskDonut(getters) {
     ]
   };
 }
+
 function renderGetterSelectors(getters, schemaG) {
   const box = $("chartGetters");
   if (!box) return;
@@ -546,6 +576,42 @@ function renderGetterSelectors(getters, schemaG) {
   });
 }
 
+function renderExecutorDataBlock(label, block) {
+  if (!block) return `${label}: —`;
+
+  const valid = badgeValid(!!block.valid);
+  const mode = badgeMode(block.mode);
+  const stamp = `<span class="pill muted">stamp:${fmtMs(block.stampMs)}</span>`;
+  const data = formatAnyData(block.data);
+
+  const extra = [];
+  if (Object.prototype.hasOwnProperty.call(block, "dirty")) {
+    extra.push(badgeDirty(!!block.dirty));
+  }
+  if (Object.prototype.hasOwnProperty.call(block, "pending")) {
+    extra.push(badgePending(!!block.pending));
+  }
+  if (block.lastWriter) {
+    extra.push(`<span class="pill muted">writer:${block.lastWriter}</span>`);
+  }
+  if (block.lastAppliedMs) {
+    extra.push(`<span class="pill muted">applied:${fmtMs(block.lastAppliedMs)}</span>`);
+  }
+
+  const err = block.lastError
+    ? `<div class="small bad mono">error:${block.lastError}</div>`
+    : "";
+
+  return `
+    <div class="small muted mono" style="margin-top:4px">
+      <div><b>${label}</b></div>
+      <div>${valid} ${mode} ${stamp} ${extra.join(" ")}</div>
+      <div>${data}</div>
+      ${err}
+    </div>
+  `;
+}
+
 async function reloadAll() {
   const s = $("search").value;
 
@@ -560,7 +626,6 @@ async function reloadAll() {
 
     setDot(status?.status === "ok");
 
-    // collect numeric getter history
     Object.entries(getters || {}).forEach(([key, entry]) => {
       if (!entry?.valid) return;
       if (!isNumericGetter(entry)) return;
@@ -579,7 +644,6 @@ async function reloadAll() {
       makeCpuDonut(getters),
       makeDiskDonut(getters),
     ];
-
     renderDonutModules(donutConfigs);
 
     const gKeys = Object.keys(getters || {}).sort();
@@ -637,12 +701,14 @@ async function reloadAll() {
         const schemaT = schemaE?.[name]
           ? `<span class="pill muted">type:${schemaE[name]}</span>`
           : `<span class="pill muted">type:?</span>`;
-        const valid = badgeValid(!!x.valid);
-        const mode = badgeMode(x.mode);
-        const stamp = `<span class="pill muted">stamp:${fmtMs(x.stampMs)}</span>`;
-        const data = x.data ? `${x.data.type}:${String(x.data.value)}` : "—";
 
-        const isManual = String(x.mode || "").toUpperCase() === "MANUAL";
+        const compatValid = badgeValid(!!x.valid);
+        const compatMode = badgeMode(x.mode);
+        const compatStamp = `<span class="pill muted">stamp:${fmtMs(x.stampMs)}</span>`;
+        const compatData = formatAnyData(x.data);
+
+        const effMode = safeUpper(effectiveMode(x));
+        const isManual = effMode === "MANUAL";
 
         const controls = `
           <div class="row" style="justify-content:flex-end">
@@ -653,12 +719,24 @@ async function reloadAll() {
           </div>
         `;
 
+        const desiredBlock = renderExecutorDataBlock("desired", x.desired);
+        const actualBlock = renderExecutorDataBlock("actual", x.actual);
+
         return `
           <div class="item">
             <div class="left">
-              <div class="k"><span class="mono">${x.id}</span> <span class="mono muted">${name}</span></div>
-              <div class="meta">${schemaT} ${valid} ${mode} ${stamp}</div>
-              <div class="small muted mono">${data}</div>
+              <div class="k">
+                <span class="mono">${x.id}</span>
+                <span class="mono muted">${name}</span>
+              </div>
+              <div class="meta">
+                ${schemaT} ${compatValid} ${compatMode} ${compatStamp}
+              </div>
+              <div class="small muted mono">
+                compat:${compatData}
+              </div>
+              ${desiredBlock}
+              ${actualBlock}
             </div>
             <div class="right">${controls}</div>
           </div>
@@ -669,8 +747,10 @@ async function reloadAll() {
     $("executors").innerHTML = eHtml || `<div class="small muted">Нет данных</div>`;
   } catch (e) {
     setDot(false);
-    $("getters").innerHTML = `<div class="small bad">Ошибка загрузки: ${String(e.message || e)}</div>`;
-    $("executors").innerHTML = `<div class="small bad">Ошибка загрузки: ${String(e.message || e)}</div>`;
+    $("getters").innerHTML =
+      `<div class="small bad">Ошибка загрузки: ${String(e.message || e)}</div>`;
+    $("executors").innerHTML =
+      `<div class="small bad">Ошибка загрузки: ${String(e.message || e)}</div>`;
   }
 }
 
@@ -681,7 +761,9 @@ function setIntervalRefresh(ms) {
 }
 
 $("btnReload").addEventListener("click", reloadAll);
-$("refresh").addEventListener("change", (e) => setIntervalRefresh(parseInt(e.target.value, 10)));
+$("refresh").addEventListener("change", (e) => {
+  setIntervalRefresh(parseInt(e.target.value, 10));
+});
 $("search").addEventListener("input", () => reloadAll());
 
 reloadAll();

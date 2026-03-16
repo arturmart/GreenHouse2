@@ -19,11 +19,11 @@
 #include "DataGetter/DG_SYS_CPU.hpp"
 #include "DataGetter/DG_SYS_DISK.hpp"
 #include "DataGetter/DG_SYS_TIME.hpp"
-//#include "DataGetter/DG_OWM_WeatherString.hpp"
 #include "API/HttpServer.hpp"
 
 #include "Executor/Executor.hpp"
 #include "Executor/EX_DeviceControlModule.hpp"
+#include "Executor/ExecutorStateBridge.hpp"
 
 // ------------------------------------------------------------
 // Adapter: Field<T> -> GH_GlobalState getter map
@@ -45,28 +45,65 @@ private:
 };
 
 // ------------------------------------------------------------
-// Adapter: ExecField<T> -> GH_GlobalState executor map
+// Desired executor field
 // ------------------------------------------------------------
 template<typename T>
-struct ExecField {
-    explicit ExecField(std::string execName, GH_MODE mode = GH_MODE::AUTO)
-        : execName_(std::move(execName)), mode_(mode) {}
+struct ExecDesiredField {
+    explicit ExecDesiredField(std::string execName,
+                              GH_MODE mode = GH_MODE::AUTO,
+                              std::string writer = "unknown")
+        : execName_(std::move(execName)),
+          mode_(mode),
+          writer_(std::move(writer)) {}
 
     void set(const T& v) {
         auto& gs = GH_GlobalState::instance();
         const int id = gs.execIdByName(execName_);
 
         if constexpr (std::is_same_v<T, float>) {
-            gs.setExec(id, static_cast<double>(v), mode_);
+            gs.setExecDesired(id, static_cast<double>(v), mode_, writer_, true);
         } else {
-            gs.setExec(id, v, mode_);
+            gs.setExecDesired(id, v, mode_, writer_, true);
         }
     }
 
     void invalidate() {
         auto& gs = GH_GlobalState::instance();
         const int id = gs.execIdByName(execName_);
-        gs.setExecInvalid(id);
+        gs.setExecDesiredInvalid(id, writer_, true);
+    }
+
+private:
+    std::string execName_;
+    GH_MODE mode_;
+    std::string writer_;
+};
+
+// ------------------------------------------------------------
+// Actual executor field
+// ------------------------------------------------------------
+template<typename T>
+struct ExecActualField {
+    explicit ExecActualField(std::string execName,
+                             GH_MODE mode = GH_MODE::AUTO)
+        : execName_(std::move(execName)),
+          mode_(mode) {}
+
+    void set(const T& v) {
+        auto& gs = GH_GlobalState::instance();
+        const int id = gs.execIdByName(execName_);
+
+        if constexpr (std::is_same_v<T, float>) {
+            gs.setExecActual(id, static_cast<double>(v), mode_, false);
+        } else {
+            gs.setExecActual(id, v, mode_, false);
+        }
+    }
+
+    void invalidate(const std::string& err = {}) {
+        auto& gs = GH_GlobalState::instance();
+        const int id = gs.execIdByName(execName_);
+        gs.setExecActualInvalid(id, err);
     }
 
 private:
@@ -97,15 +134,16 @@ int main() {
     // IMPORTANT:
     // strategies keep pointers to Field<T>, so fields must live
     // for the whole program lifetime.
-    std::vector<std::unique_ptr<Field<float>>>  getterFieldsFloat;
+    std::vector<std::unique_ptr<Field<float>>> getterFieldsFloat;
     std::vector<std::unique_ptr<Field<double>>> getterFieldsDouble;
-    std::vector<std::unique_ptr<Field<int>>>    getterFieldsInt;
-    std::vector<std::unique_ptr<Field<bool>>>   getterFieldsBool;
+    std::vector<std::unique_ptr<Field<int>>> getterFieldsInt;
+    std::vector<std::unique_ptr<Field<bool>>> getterFieldsBool;
     std::vector<std::unique_ptr<Field<std::string>>> getterFieldsString;
-    //std::vector<std::unique_ptr<Field<long long>>> getterFieldsLongLong;
     std::vector<std::unique_ptr<Field<tools::UnixMs>>> getterFieldsTime;
 
+    // ------------------------------------------------------------
     // Create getter strategies from config
+    // ------------------------------------------------------------
     try {
         for (const auto& kv : cfg.getterBindings()) {
             const std::string& getterKey = kv.first;
@@ -118,7 +156,6 @@ int main() {
                     );
                 }
 
-                // Current DG_DS18B20 returns float
                 auto& strat = dg.emplace<dg::DG_DS18B20>(
                     "dg_" + getterKey,
                     bind.args[0]
@@ -136,7 +173,6 @@ int main() {
             }
 
             if (bind.strategy == "STATIC_STRING") {
-                // optional future strategy
                 std::cout << "[CFG] getter " << getterKey
                           << " uses STATIC_STRING (not instantiated in this main)\n";
                 continue;
@@ -171,8 +207,8 @@ int main() {
                 strat.initRef(*getterFieldsDouble.back());
 
                 std::cout << "[CFG] getter " << getterKey
-                        << " -> DG_OWM_WEATHER(" << fieldKey
-                        << ", cacheMs=" << cacheMs << ")\n";
+                          << " -> DG_OWM_WEATHER(" << fieldKey
+                          << ", cacheMs=" << cacheMs << ")\n";
                 continue;
             }
 
@@ -184,7 +220,6 @@ int main() {
                 }
 
                 const std::string field = bind.args[0];
-
                 dg::DG_SYS_MEM::Field memField;
 
                 if (field == "total") {
@@ -193,11 +228,9 @@ int main() {
                     memField = dg::DG_SYS_MEM::Field::MEM_FREE;
                 } else if (field == "available") {
                     memField = dg::DG_SYS_MEM::Field::MEM_AVAILABLE;
-                }
-                else if (field == "process") {
+                } else if (field == "process") {
                     memField = dg::DG_SYS_MEM::Field::MEM_PROCESS;
-                }
-                else {
+                } else {
                     throw std::runtime_error(
                         "DG_SYS_MEM unknown field '" + field +
                         "' for getter: " + getterKey
@@ -216,11 +249,11 @@ int main() {
                 strat.initRef(*getterFieldsDouble.back());
 
                 std::cout << "[CFG] getter " << getterKey
-                        << " -> DG_SYS_MEM(" << field << ")\n";
+                          << " -> DG_SYS_MEM(" << field << ")\n";
                 continue;
             }
 
-            if (bind.strategy == "DG_SYS_CPU"){
+            if (bind.strategy == "DG_SYS_CPU") {
                 auto& strat = dg.emplace<dg::DG_SYS_CPU>("dg_" + getterKey);
 
                 getterFieldsDouble.push_back(
@@ -230,11 +263,10 @@ int main() {
                 strat.initRef(*getterFieldsDouble.back());
 
                 std::cout << "[CFG] getter " << getterKey
-                        << " -> DG_SYS_CPU\n";
-
+                          << " -> DG_SYS_CPU\n";
                 continue;
             }
-            
+
             if (bind.strategy == "DG_SYS_DISK") {
                 if (bind.args.size() < 1) {
                     throw std::runtime_error(
@@ -273,12 +305,13 @@ int main() {
                 strat.initRef(*getterFieldsDouble.back());
 
                 std::cout << "[CFG] getter " << getterKey
-                        << " -> DG_SYS_DISK(" << field
-                        << ", path=" << path << ")\n";
+                          << " -> DG_SYS_DISK(" << field
+                          << ", path=" << path << ")\n";
                 continue;
             }
-        std::cout << "[CFG] warning: unsupported getter strategy for "
-                    << getterKey << ": " << bind.strategy << "\n";
+
+            std::cout << "[CFG] warning: unsupported getter strategy for "
+                      << getterKey << ": " << bind.strategy << "\n";
         }
     } catch (const std::exception& ex) {
         std::cerr << "[CFG] getter binding init error: " << ex.what() << "\n";
@@ -300,10 +333,8 @@ int main() {
         std::cout << "[MAIN] getter time -> DG_TIME\n";
     }
 
-
     dg.init(dgCtx);
 
-    
     // ------------------------------------------------------------
     // Executor + DCM
     // ------------------------------------------------------------
@@ -322,109 +353,28 @@ int main() {
         "dcm", dcm.get(),
         "flush_all_on_tick", false
     );
+    control::ExecutorStateBridge execBridge(gs, executor);
+
 
     // ------------------------------------------------------------
-    // Generic DCM dispatch by config mapping
+    // Desired-state API helpers
     // ------------------------------------------------------------
-    auto enqueueMappedAndSync =
-        [&](const std::string& execName,
-            const std::any& rawValue,
-            int priority = 10,
-            GH_MODE mode = GH_MODE::AUTO) {
-            try {
-                auto bind = gs.getDcmBindingByName(execName);
-
-                if (bind.tableId == DeviceControlModule::TABLE_DIGITAL) {
-                    bool v = false;
-
-                    if (rawValue.type() == typeid(bool)) {
-                        v = std::any_cast<bool>(rawValue);
-                    } else if (rawValue.type() == typeid(int)) {
-                        v = (std::any_cast<int>(rawValue) != 0);
-                    } else {
-                        throw std::runtime_error("Digital binding expects bool/int for " + execName);
-                    }
-
-                    executor.enqueue(
-                        "DCM",
-                        priority,
-                        bind.tableId,
-                        bind.index,
-                        v ? 1 : 0
-                    );
-
-                    ExecField<bool> f(execName, mode);
-                    f.set(v);
-
-                    std::cout << "[SYNC] DIGITAL "
-                              << execName
-                              << " <= " << std::boolalpha << v
-                              << " [" << bind.tableId << "," << bind.index << "," << (v ? 1 : 0) << "]\n";
-                    return;
-                }
-
-                if (bind.tableId == DeviceControlModule::TABLE_PWM) {
-                    int pwm = 0;
-
-                    if (rawValue.type() == typeid(int)) {
-                        pwm = std::any_cast<int>(rawValue);
-                    } else if (rawValue.type() == typeid(bool)) {
-                        pwm = std::any_cast<bool>(rawValue) ? 255 : 0;
-                    } else {
-                        throw std::runtime_error("PWM binding expects int/bool for " + execName);
-                    }
-
-                    if (pwm < 0 || pwm > 255) {
-                        throw std::runtime_error("PWM out of range 0..255 for " + execName);
-                    }
-
-                    executor.enqueue(
-                        "DCM",
-                        priority,
-                        bind.tableId,
-                        bind.index,
-                        pwm
-                    );
-
-                    ExecField<int> f(execName, mode);
-                    f.set(pwm);
-
-                    std::cout << "[SYNC] PWM "
-                              << execName
-                              << " <= " << pwm
-                              << " [" << bind.tableId << "," << bind.index << "," << pwm << "]\n";
-                    return;
-                }
-
-                throw std::runtime_error("Unsupported tableId in DCM binding for " + execName);
-            } catch (const std::exception& ex) {
-                std::cout << "[SYNC] error for " << execName << ": " << ex.what() << "\n";
-                try {
-                    auto bind = gs.getDcmBindingByName(execName);
-                    if (bind.tableId == DeviceControlModule::TABLE_DIGITAL) {
-                        ExecField<bool> f(execName, mode);
-                        f.invalidate();
-                    } else {
-                        ExecField<int> f(execName, mode);
-                        f.invalidate();
-                    }
-                } catch (...) {}
-            }
-        };
-
-    auto setExecModeByName =
-        [&](const std::string& execName, GH_MODE mode) {
+    auto setExecDesiredModeByName =
+        [&](const std::string& execName, GH_MODE mode, const std::string& writer = "api") {
             const int id = gs.execIdByName(execName);
-            gs.setExecMode(id, mode);
+            gs.setExecDesiredMode(id, mode, writer, true);
         };
 
     // ------------------------------------------------------------
     // HTTP command handler
+    // API now writes DESIRED state only.
     // ------------------------------------------------------------
     auto commandHandler =
         [&](const std::string& name,
             const std::string& action,
             const std::string& value) -> std::string {
+
+            const int id = gs.execIdByName(name);
 
             if (action == "mode") {
                 GH_MODE m;
@@ -436,37 +386,36 @@ int main() {
                     throw std::runtime_error("mode must be manual/auto");
                 }
 
-                setExecModeByName(name, m);
+                setExecDesiredModeByName(name, m, "api");
 
                 return std::string("{\"ok\":true,\"name\":\"") + name +
                        "\",\"action\":\"mode\",\"value\":\"" + toString(m) + "\"}";
             }
 
-            if (action == "on" || action == "off") {
-                const int id = gs.execIdByName(name);
-                auto e = gs.getExecEntry(id);
+            auto desired = gs.getExecDesiredEntry(id);
+            auto actual  = gs.getExecActualEntry(id);
 
-                if (e.mode != GH_MODE::MANUAL) {
+            GH_MODE effectiveMode = desired.valid ? desired.mode : actual.mode;
+
+            if (action == "on" || action == "off") {
+                if (effectiveMode != GH_MODE::MANUAL) {
                     throw std::runtime_error("Executor is not in MANUAL mode: " + name);
                 }
 
                 const bool v = (action == "on");
-                enqueueMappedAndSync(name, std::any(v), 10, GH_MODE::MANUAL);
+                gs.setExecDesired(id, v, GH_MODE::MANUAL, "api", true);
 
                 return std::string("{\"ok\":true,\"name\":\"") + name +
                        "\",\"action\":\"" + action + "\"}";
             }
 
             if (action == "set") {
-                const int id = gs.execIdByName(name);
-                auto e = gs.getExecEntry(id);
-
-                if (e.mode != GH_MODE::MANUAL) {
+                if (effectiveMode != GH_MODE::MANUAL) {
                     throw std::runtime_error("Executor is not in MANUAL mode: " + name);
                 }
 
                 const int iv = std::stoi(value);
-                enqueueMappedAndSync(name, std::any(iv), 10, GH_MODE::MANUAL);
+                gs.setExecDesired(id, iv, GH_MODE::MANUAL, "api", true);
 
                 return std::string("{\"ok\":true,\"name\":\"") + name +
                        "\",\"action\":\"set\",\"value\":" + std::to_string(iv) + "}";
@@ -476,17 +425,26 @@ int main() {
         };
 
     // ------------------------------------------------------------
-    // Optional startup tests from config-mapped names
+    // Boot desired-state demo
     // ------------------------------------------------------------
     try {
-        enqueueMappedAndSync("LOW_DCM_D_0", std::any(true));
-        enqueueMappedAndSync("LOW_DCM_D_0", std::any(false));
-        enqueueMappedAndSync("LOW_DCM_D_1", std::any(true));
-        enqueueMappedAndSync("LOW_DCM_D_1", std::any(false));
-        enqueueMappedAndSync("LOW_DCM_D_2", std::any(true));
-        enqueueMappedAndSync("LOW_DCM_D_2", std::any(false));
+        {
+            const int id = gs.execIdByName("LOW_DCM_D_0");
+            gs.setExecDesired(id, true,  GH_MODE::AUTO, "boot", true);
+            gs.setExecDesired(id, false, GH_MODE::AUTO, "boot", true);
+        }
+        {
+            const int id = gs.execIdByName("LOW_DCM_D_1");
+            gs.setExecDesired(id, true,  GH_MODE::AUTO, "boot", true);
+            gs.setExecDesired(id, false, GH_MODE::AUTO, "boot", true);
+        }
+        {
+            const int id = gs.execIdByName("LOW_DCM_D_2");
+            gs.setExecDesired(id, true,  GH_MODE::AUTO, "boot", true);
+            gs.setExecDesired(id, false, GH_MODE::AUTO, "boot", true);
+        }
     } catch (...) {
-        std::cout << "[BOOT] startup demo commands skipped or partially failed\n";
+        std::cout << "[BOOT] startup desired-state demo skipped or partially failed\n";
     }
 
     // ------------------------------------------------------------
@@ -497,11 +455,14 @@ int main() {
     sch.addPeriodic([&]() {
         try {
             dg.tick();
-        }
-        catch (const std::exception& ex) {
+        } catch (const std::exception& ex) {
             std::cout << "[DG] error: " << ex.what() << "\n";
         }
     }, Scheduler::Ms(1000), "DG tick -> GlobalState");
+
+    sch.addPeriodic([&]() {
+        execBridge.tick();
+    }, Scheduler::Ms(150), "DesiredState bridge -> Executor");
 
     sch.addPeriodic([&]() {
         try {

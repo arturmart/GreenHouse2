@@ -72,15 +72,6 @@ static inline std::string any_to_json(const std::any& a) {
         int v = std::any_cast<int>(a);
         return "{\"type\":\"int\",\"value\":" + std::to_string(v) + "}";
     }
-    if (t == typeid(tools::UnixMs)) {
-        const auto& v = std::any_cast<const tools::UnixMs&>(a);
-
-        return std::string("{\"type\":\"time\",\"value\":")
-            + std::to_string(v.value)
-            + ",\"formatted\":\""
-            + jescape(tools::unixMsToString(v.value))
-            + "\"}";
-    }
     if (t == typeid(double)) {
         double v = std::any_cast<double>(a);
         return "{\"type\":\"double\",\"value\":" + std::to_string(v) + "}";
@@ -88,6 +79,14 @@ static inline std::string any_to_json(const std::any& a) {
     if (t == typeid(std::string)) {
         std::string v = jescape(std::any_cast<std::string>(a));
         return "{\"type\":\"string\",\"value\":\"" + v + "\"}";
+    }
+    if (t == typeid(tools::UnixMs)) {
+        const auto& v = std::any_cast<const tools::UnixMs&>(a);
+        return std::string("{\"type\":\"time\",\"value\":")
+            + std::to_string(v.value)
+            + ",\"formatted\":\""
+            + jescape(tools::unixMsToString(v.value))
+            + "\"}";
     }
 
     return "{\"type\":\"unknown\",\"value\":null}";
@@ -102,6 +101,35 @@ static inline std::string valueTypeToStr(GH_GlobalState::ValueType vt) {
         case VT::STRING: return "string";
     }
     return "unknown";
+}
+
+static inline std::string mode_to_json(GH_MODE mode) {
+    return std::string("\"") + jescape(toString(mode)) + "\"";
+}
+
+static inline std::string desired_to_json(const GH_GlobalState::ExecDesiredEntry& e) {
+    std::string out = "{";
+    out += "\"valid\":" + std::string(e.valid ? "true" : "false");
+    out += ",\"dirty\":" + std::string(e.dirty ? "true" : "false");
+    out += ",\"mode\":" + mode_to_json(e.mode);
+    out += ",\"stampMs\":" + std::to_string(e.stampMs);
+    out += ",\"lastWriter\":\"" + jescape(e.lastWriter) + "\"";
+    out += ",\"data\":" + any_to_json(e.value);
+    out += "}";
+    return out;
+}
+
+static inline std::string actual_to_json(const GH_GlobalState::ExecActualEntry& e) {
+    std::string out = "{";
+    out += "\"valid\":" + std::string(e.valid ? "true" : "false");
+    out += ",\"pending\":" + std::string(e.pending ? "true" : "false");
+    out += ",\"mode\":" + mode_to_json(e.mode);
+    out += ",\"stampMs\":" + std::to_string(e.stampMs);
+    out += ",\"lastAppliedMs\":" + std::to_string(e.lastAppliedMs);
+    out += ",\"lastError\":\"" + jescape(e.lastError) + "\"";
+    out += ",\"data\":" + any_to_json(e.value);
+    out += "}";
+    return out;
 }
 
 static inline http::response<http::string_body>
@@ -177,8 +205,9 @@ handle_request(http::request<http::string_body>&& req, const CommandHandler& cmd
     const auto method = req.method();
     auto& st = GH_GlobalState::instance();
 
-    if (method == http::verb::get && target == "/status")
+    if (method == http::verb::get && target == "/status") {
         return make_json(req, http::status::ok, "{\"status\":\"ok\"}");
+    }
 
     if (method == http::verb::get && target == "/schema/getters") {
         auto schema = st.snapshotGetterSchema();
@@ -252,10 +281,17 @@ handle_request(http::request<http::string_body>&& req, const CommandHandler& cmd
             out += "{";
             out += "\"id\":" + std::to_string(e.id);
             out += ",\"name\":\"" + jescape(e.name) + "\"";
+
+            // compatibility fields based on actual-state
             out += ",\"valid\":" + std::string(e.entry.valid ? "true" : "false");
             out += ",\"stampMs\":" + std::to_string(e.entry.stampMs);
             out += ",\"mode\":\"" + jescape(toString(e.entry.mode)) + "\"";
             out += ",\"data\":" + any_to_json(e.entry.value);
+
+            // new model
+            out += ",\"desired\":" + desired_to_json(e.desired);
+            out += ",\"actual\":" + actual_to_json(e.actual);
+
             out += "}";
         }
         out += "]";
@@ -290,7 +326,7 @@ handle_request(http::request<http::string_body>&& req, const CommandHandler& cmd
         }
     }
 
-    // POST /api/executors/<name>/mode    body: {"value":"manual"} or {"value":"auto"}
+    // POST /api/executors/<name>/<action>
     if (method == http::verb::post && target.rfind("/api/executors/", 0) == 0) {
         try {
             const std::string prefix = "/api/executors/";
@@ -402,7 +438,9 @@ private:
         acceptor_.async_accept(
             asio::make_strand(ioc_),
             [self = shared_from_this()](beast::error_code ec, tcp::socket s) {
-                if (!ec) std::make_shared<HttpSession>(std::move(s), self->cmdHandler_)->run();
+                if (!ec) {
+                    std::make_shared<HttpSession>(std::move(s), self->cmdHandler_)->run();
+                }
                 self->do_accept();
             });
     }
