@@ -105,17 +105,107 @@ public:
     }
 };
 
+// ------------------------------------------------------------
+// Modulo-based strategies
+// ------------------------------------------------------------
+
+// ((data % (part * partCnt)) / part) == whichPart
 template<typename T>
 class CondModPart final : public IConditionStrategy<T> {
 public:
     bool evaluate(const std::vector<T>& args) const override {
-        // args:
-        // [0] = data
-        // [1] = part size
-        // [2] = part count
-        // [3] = which part index
         return args.size() == 4 &&
+               args[1] > 0 &&
+               args[2] > 0 &&
                (((args[0] % (args[1] * args[2])) / args[1]) == args[3]);
+    }
+};
+
+// (data % mod) < threshold
+template<typename T>
+class CondModLess final : public IConditionStrategy<T> {
+public:
+    bool evaluate(const std::vector<T>& args) const override {
+        return args.size() == 3 &&
+               args[1] > 0 &&
+               ((args[0] % args[1]) < args[2]);
+    }
+};
+
+// (data % mod) <= threshold
+template<typename T>
+class CondModLessEqual final : public IConditionStrategy<T> {
+public:
+    bool evaluate(const std::vector<T>& args) const override {
+        return args.size() == 3 &&
+               args[1] > 0 &&
+               ((args[0] % args[1]) <= args[2]);
+    }
+};
+
+// (data % mod) > threshold
+template<typename T>
+class CondModGreater final : public IConditionStrategy<T> {
+public:
+    bool evaluate(const std::vector<T>& args) const override {
+        return args.size() == 3 &&
+               args[1] > 0 &&
+               ((args[0] % args[1]) > args[2]);
+    }
+};
+
+// (data % mod) >= threshold
+template<typename T>
+class CondModGreaterEqual final : public IConditionStrategy<T> {
+public:
+    bool evaluate(const std::vector<T>& args) const override {
+        return args.size() == 3 &&
+               args[1] > 0 &&
+               ((args[0] % args[1]) >= args[2]);
+    }
+};
+
+// (data % mod) == value
+template<typename T>
+class CondModEqual final : public IConditionStrategy<T> {
+public:
+    bool evaluate(const std::vector<T>& args) const override {
+        return args.size() == 3 &&
+               args[1] > 0 &&
+               ((args[0] % args[1]) == args[2]);
+    }
+};
+
+// (data % mod) != value
+template<typename T>
+class CondModNotEqual final : public IConditionStrategy<T> {
+public:
+    bool evaluate(const std::vector<T>& args) const override {
+        return args.size() == 3 &&
+               args[1] > 0 &&
+               ((args[0] % args[1]) != args[2]);
+    }
+};
+
+// from <= (data % mod) <= to
+template<typename T>
+class CondModInRange final : public IConditionStrategy<T> {
+public:
+    bool evaluate(const std::vector<T>& args) const override {
+        if (args.size() != 4 || args[1] <= 0) return false;
+        const T v = args[0] % args[1];
+        return v >= args[2] && v <= args[3];
+    }
+};
+
+// (data % mod) < from || (data % mod) > to
+template<typename T>
+class CondModOutOfRange final : public IConditionStrategy<T> {
+public:
+    bool evaluate(const std::vector<T>& args) const override {
+        if (args.size() != 4 || args[1] <= 0) return false;
+        const T v = args[0] % args[1];
+        return v < args[2] || v > args[3];
     }
 };
 
@@ -137,7 +227,7 @@ public:
         addStrategy<double>("always", std::make_unique<CondAlways<double>>());
         addStrategy<double>("never", std::make_unique<CondNever<double>>());
 
-        // int64
+        // int64 / long long
         addStrategy<long long>("gt_i64", std::make_unique<CondGreater<long long>>());
         addStrategy<long long>("lt_i64", std::make_unique<CondLess<long long>>());
         addStrategy<long long>("eq_i64", std::make_unique<CondEqual<long long>>());
@@ -146,9 +236,19 @@ public:
         addStrategy<long long>("lte_i64", std::make_unique<CondLessEqual<long long>>());
         addStrategy<long long>("in_range_i64", std::make_unique<CondInRange<long long>>());
         addStrategy<long long>("out_of_range_i64", std::make_unique<CondOutOfRange<long long>>());
-        addStrategy<long long>("mod_part", std::make_unique<CondModPart<long long>>());
         addStrategy<long long>("always_i64", std::make_unique<CondAlways<long long>>());
         addStrategy<long long>("never_i64", std::make_unique<CondNever<long long>>());
+
+        // modulo-based int64
+        addStrategy<long long>("mod_part", std::make_unique<CondModPart<long long>>());
+        addStrategy<long long>("mod_lt", std::make_unique<CondModLess<long long>>());
+        addStrategy<long long>("mod_lte", std::make_unique<CondModLessEqual<long long>>());
+        addStrategy<long long>("mod_gt", std::make_unique<CondModGreater<long long>>());
+        addStrategy<long long>("mod_gte", std::make_unique<CondModGreaterEqual<long long>>());
+        addStrategy<long long>("mod_eq", std::make_unique<CondModEqual<long long>>());
+        addStrategy<long long>("mod_neq", std::make_unique<CondModNotEqual<long long>>());
+        addStrategy<long long>("mod_in_range", std::make_unique<CondModInRange<long long>>());
+        addStrategy<long long>("mod_out_of_range", std::make_unique<CondModOutOfRange<long long>>());
 
         // bool
         addStrategy<bool>("is_true", std::make_unique<CondEqual<bool>>());
@@ -226,7 +326,6 @@ private:
             return false;
         }
 
-        // special handling for bool unary conditions
         if constexpr (std::is_same_v<T, bool>) {
             if (key == "is_true") {
                 return converted.size() == 1 && converted[0] == true;

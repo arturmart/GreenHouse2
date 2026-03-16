@@ -334,6 +334,34 @@ handle_request(http::request<http::string_body>&& req,
         return make_json(req, http::status::ok, json_api_routes_to_json(*jsonApi));
     }
 
+    if (method == http::verb::get && target == "/logic") {
+        try {
+            auto html = readFile("API/web/logic.html");
+            http::response<http::string_body> res{http::status::ok, req.version()};
+            res.set(http::field::content_type, "text/html; charset=utf-8");
+            res.keep_alive(req.keep_alive());
+            res.body() = html;
+            res.prepare_payload();
+            return res;
+        } catch (const std::exception& ex) {
+            return make_text(req, http::status::internal_server_error, ex.what());
+        }
+    }
+
+    if (method == http::verb::get && target == "/logic.js") {
+        try {
+            auto js = readFile("API/web/logic.js");
+            http::response<http::string_body> res{http::status::ok, req.version()};
+            res.set(http::field::content_type, "application/javascript; charset=utf-8");
+            res.keep_alive(req.keep_alive());
+            res.body() = js;
+            res.prepare_payload();
+            return res;
+        } catch (const std::exception& ex) {
+            return make_text(req, http::status::internal_server_error, ex.what());
+        }
+    }
+
     if (target.rfind("/api/json/", 0) == 0) {
         if (!jsonApi) {
             return make_json(req, http::status::service_unavailable,

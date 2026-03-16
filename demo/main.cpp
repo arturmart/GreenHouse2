@@ -8,6 +8,9 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
+#include <fstream>
+
+#include <nlohmann/json.hpp>
 
 #include "GlobalState.hpp"
 #include "Configurator.hpp"
@@ -29,7 +32,7 @@
 #include "Logic/RuleNode.hpp"
 #include "Logic/RuleTree.hpp"
 #include "Logic/RuleEngine.hpp"
-#include "API/JsonAPI.hpp"
+#include "API/JsonAPI.hpp"          // если у тебя файл называется JsonApi.hpp -> поменяй include
 #include "Logic/LogicDebugJson.hpp"
 
 // ------------------------------------------------------------
@@ -121,6 +124,118 @@ private:
 static volatile std::sig_atomic_t g_run = 1;
 static void onSigInt(int) { g_run = 0; }
 
+// ------------------------------------------------------------
+// Logic JSON helpers
+// ------------------------------------------------------------
+using json = nlohmann::json;
+
+static logic::TriggerMode parseTriggerMode(const std::string& s) {
+    if (s == "on_enter")   return logic::TriggerMode::ON_ENTER;
+    if (s == "on_exit")    return logic::TriggerMode::ON_EXIT;
+    if (s == "while_true") return logic::TriggerMode::WHILE_TRUE;
+    if (s == "while_false")return logic::TriggerMode::WHILE_FALSE;
+    throw std::runtime_error("Unknown trigger mode: " + s);
+}
+
+static logic::ActionValueType parseActionValueType(const std::string& s) {
+    if (s == "bool")   return logic::ActionValueType::BOOL;
+    if (s == "int")    return logic::ActionValueType::INT;
+    if (s == "double") return logic::ActionValueType::DOUBLE;
+    if (s == "string") return logic::ActionValueType::STRING;
+    throw std::runtime_error("Unknown action value type: " + s);
+}
+
+static std::vector<std::string> parseStringArray(const json& j, const char* key) {
+    std::vector<std::string> out;
+
+    if (!j.contains(key)) {
+        return out;
+    }
+
+    if (!j.at(key).is_array()) {
+        throw std::runtime_error(std::string("Field '") + key + "' must be array");
+    }
+
+    for (const auto& v : j.at(key)) {
+        if (!v.is_string()) {
+            throw std::runtime_error(std::string("Field '") + key + "' must contain strings");
+        }
+        out.push_back(v.get<std::string>());
+    }
+
+    return out;
+}
+
+static std::vector<logic::ActionModel> parseActions(const json& j) {
+    std::vector<logic::ActionModel> actions;
+
+    if (!j.contains("actions")) {
+        return actions;
+    }
+
+    if (!j.at("actions").is_array()) {
+        throw std::runtime_error("Field 'actions' must be array");
+    }
+
+    for (const auto& a : j.at("actions")) {
+        logic::ActionModel action;
+
+        action.target = a.at("target").get<std::string>();
+        action.valueType = parseActionValueType(a.at("valueType").get<std::string>());
+        action.value = a.at("value").get<std::string>();
+        action.trigger = parseTriggerMode(a.value("trigger", "on_enter"));
+        action.enabled = a.value("enabled", true);
+
+        actions.push_back(std::move(action));
+    }
+
+    return actions;
+}
+
+static std::unique_ptr<logic::RuleNode> parseRuleNode(const json& j) {
+    const std::string title = j.value("title", "unnamed");
+    const std::string condition = j.value("condition", "always");
+    const auto args = parseStringArray(j, "args");
+    const auto actions = parseActions(j);
+
+    auto node = std::make_unique<logic::RuleNode>(
+        title,
+        condition,
+        args,
+        actions
+    );
+
+    if (j.contains("children")) {
+        if (!j.at("children").is_array()) {
+            throw std::runtime_error("Field 'children' must be array");
+        }
+
+        for (const auto& ch : j.at("children")) {
+            node->addChild(parseRuleNode(ch));
+        }
+    }
+
+    return node;
+}
+
+static logic::RuleTree loadLogicTreeFromFile(const std::string& path) {
+    std::ifstream in(path);
+    if (!in.is_open()) {
+        throw std::runtime_error("Failed to open logic file: " + path);
+    }
+
+    json j;
+    in >> j;
+
+    if (!j.contains("root")) {
+        throw std::runtime_error("Logic file must contain 'root'");
+    }
+
+    logic::RuleTree tree;
+    tree.setRoot(parseRuleNode(j.at("root")));
+    return tree;
+}
+
 int main() {
     std::signal(SIGINT, onSigInt);
 
@@ -138,9 +253,6 @@ int main() {
     dg::DataGetter dg;
     dg::ADataGetterStrategyBase::Ctx dgCtx;
 
-    // IMPORTANT:
-    // strategies keep pointers to Field<T>, so fields must live
-    // for the whole program lifetime.
     std::vector<std::unique_ptr<Field<float>>> getterFieldsFloat;
     std::vector<std::unique_ptr<Field<double>>> getterFieldsDouble;
     std::vector<std::unique_ptr<Field<int>>> getterFieldsInt;
@@ -360,68 +472,27 @@ int main() {
         "dcm", dcm.get(),
         "flush_all_on_tick", false
     );
+
     control::ExecutorStateBridge execBridge(gs, executor);
+
     // ------------------------------------------------------------
-    // LogicEngine manual test tree
+    // LogicEngine from file: logic.json
     // ------------------------------------------------------------
     logic::RuleTree logicTree;
 
-    {
-        using logic::ActionModel;
-        using logic::ActionValueType;
-        using logic::RuleNode;
-        using logic::TriggerMode;
-
-        auto root = std::make_unique<RuleNode>(
-            "main",
-            "always",
-            std::vector<std::string>{},
-            std::vector<ActionModel>{}
-        );
-
-        // temp > 26  -> LOW_DCM_D_0 = true
-        {
-            std::vector<ActionModel> actions;
-            actions.push_back(ActionModel{
-                "LOW_DCM_D_0",
-                ActionValueType::BOOL,
-                "true",
-                TriggerMode::ON_ENTER,
-                true
-            });
-
-            root->addChild(std::make_unique<RuleNode>(
-                "Cooler1On",
-                "gt",
-                std::vector<std::string>{"temp", "26"},
-                actions
-            ));
-        }
-
-        // temp < 24  -> LOW_DCM_D_0 = false
-        {
-            std::vector<ActionModel> actions;
-            actions.push_back(ActionModel{
-                "LOW_DCM_D_0",
-                ActionValueType::BOOL,
-                "false",
-                TriggerMode::ON_ENTER,
-                true
-            });
-
-            root->addChild(std::make_unique<RuleNode>(
-                "Cooler1Off",
-                "lt",
-                std::vector<std::string>{"temp", "24"},
-                actions
-            ));
-        }
-
-        logicTree.setRoot(std::move(root));
+    try {
+        logicTree = loadLogicTreeFromFile("logic.json");
+        std::cout << "[LOGIC] loaded logic.json successfully\n";
+    } catch (const std::exception& ex) {
+        std::cerr << "[LOGIC] failed to load logic.json: " << ex.what() << "\n";
+        return 1;
     }
 
     logic::RuleEngine logicEngine(gs, logicTree);
 
+    // ------------------------------------------------------------
+    // Generic JSON API
+    // ------------------------------------------------------------
     api::JsonApi jsonApi;
 
     jsonApi.registerGetter("logic/tree", [&]() {
@@ -435,7 +506,6 @@ int main() {
     jsonApi.registerGetter("logic/full", [&]() {
         return logic::treeToJson(logicTree);
     });
-    
 
     // ------------------------------------------------------------
     // Desired-state API helpers
@@ -558,11 +628,11 @@ int main() {
         } catch (...) {
             std::cout << "[LOGIC] tick unknown error\n";
         }
-    }, Scheduler::Ms(500), "Logic.tick()");
+    }, Scheduler::Ms(100), "Logic.tick()");
 
     sch.addPeriodic([&]() {
         execBridge.tick();
-    }, Scheduler::Ms(150), "DesiredState bridge -> Executor");
+    }, Scheduler::Ms(100), "DesiredState bridge -> Executor");
 
     sch.addPeriodic([&]() {
         try {
@@ -598,6 +668,7 @@ int main() {
     }, Scheduler::Ms(0), "HTTP ioc.run()");
 
     std::cout << "HTTP server on http://localhost:8080\n";
+    std::cout << "Logic file: logic.json\n";
     std::cout << "Running. Ctrl+C to stop.\n";
 
     while (g_run) {

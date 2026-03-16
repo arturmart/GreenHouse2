@@ -1,217 +1,159 @@
 #pragma once
 
-#include <sstream>
+#include <nlohmann/json.hpp>
 #include <string>
-#include <vector>
 
 #include "RuleTree.hpp"
-#include "ActionModel.hpp"
 
 namespace logic {
 
-// ------------------------------------------------------------
-// JSON escape
-// ------------------------------------------------------------
-inline std::string jsonEscape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
+using json = nlohmann::json;
 
-    for (char c : s) {
-        switch (c) {
-            case '\"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default: out += c; break;
-        }
-    }
+// ------------------------------------------------------------
+// Runtime -> json
+// ------------------------------------------------------------
+inline json runtimeToJson(const RuleRuntimeState& rt)
+{
+    json j;
 
-    return out;
+    j["localResult"] = rt.localResult;
+    j["effectiveResult"] = rt.effectiveResult;
+    j["prevEffectiveResult"] = rt.prevEffectiveResult;
+
+    j["lastEvalMs"] = rt.lastEvalMs;
+    j["lastFireMs"] = rt.lastFireMs;
+
+    j["lastError"] = rt.lastError;
+
+    j["resolvedArgs"] = json::array();
+    for (const auto& a : rt.resolvedArgs)
+        j["resolvedArgs"].push_back(a);
+
+    return j;
 }
 
 // ------------------------------------------------------------
-// Enum -> string helpers
+// Action -> json
 // ------------------------------------------------------------
-inline std::string toStringJson(TriggerMode t) {
-    return toString(t);
-}
+inline json actionToJson(const ActionModel& a)
+{
+    json j;
 
-inline std::string toStringJson(ActionValueType t) {
-    return toString(t);
-}
+    j["target"] = a.target;
+    j["valueType"] = toString(a.valueType);
+    j["value"] = a.value;
+    j["trigger"] = toString(a.trigger);
+    j["enabled"] = a.enabled;
 
-// ------------------------------------------------------------
-// Action -> JSON
-// ------------------------------------------------------------
-inline std::string actionToJson(const ActionModel& a) {
-    std::string out = "{";
-    out += "\"target\":\"" + jsonEscape(a.target) + "\"";
-    out += ",\"valueType\":\"" + jsonEscape(toStringJson(a.valueType)) + "\"";
-    out += ",\"value\":\"" + jsonEscape(a.value) + "\"";
-    out += ",\"trigger\":\"" + jsonEscape(toStringJson(a.trigger)) + "\"";
-    out += ",\"enabled\":" + std::string(a.enabled ? "true" : "false");
-    out += "}";
-    return out;
+    return j;
 }
 
 // ------------------------------------------------------------
-// vector<string> -> JSON
+// Node structure (no runtime)
 // ------------------------------------------------------------
-inline std::string stringVectorToJson(const std::vector<std::string>& arr) {
-    std::string out = "[";
-    bool first = true;
+inline json nodeStructureToJson(const RuleNode* node)
+{
+    json j;
 
-    for (const auto& s : arr) {
-        if (!first) out += ",";
-        first = false;
-        out += "\"" + jsonEscape(s) + "\"";
-    }
+    j["title"] = node->title();
+    j["condition"] = node->condition();
 
-    out += "]";
-    return out;
+    j["args"] = json::array();
+    for (const auto& a : node->args())
+        j["args"].push_back(a);
+
+    j["actions"] = json::array();
+    for (const auto& a : node->actions())
+        j["actions"].push_back(actionToJson(a));
+
+    j["children"] = json::array();
+    for (const auto& ch : node->children())
+        j["children"].push_back(nodeStructureToJson(ch.get()));
+
+    return j;
 }
 
 // ------------------------------------------------------------
-// actions -> JSON
+// Node runtime (no structure)
 // ------------------------------------------------------------
-inline std::string actionsToJson(const std::vector<ActionModel>& actions) {
-    std::string out = "[";
-    bool first = true;
+inline json nodeRuntimeToJson(const RuleNode* node)
+{
+    json j;
 
-    for (const auto& a : actions) {
-        if (!first) out += ",";
-        first = false;
-        out += actionToJson(a);
-    }
+    j["title"] = node->title();
+    j["runtime"] = runtimeToJson(node->runtime());
 
-    out += "]";
-    return out;
+    j["children"] = json::array();
+    for (const auto& ch : node->children())
+        j["children"].push_back(nodeRuntimeToJson(ch.get()));
+
+    return j;
 }
 
 // ------------------------------------------------------------
-// runtime -> JSON
+// Full node (structure + runtime)
 // ------------------------------------------------------------
-inline std::string runtimeToJson(const RuleRuntimeState& rt) {
-    std::string out = "{";
-    out += "\"localResult\":" + std::string(rt.localResult ? "true" : "false");
-    out += ",\"effectiveResult\":" + std::string(rt.effectiveResult ? "true" : "false");
-    out += ",\"prevEffectiveResult\":" + std::string(rt.prevEffectiveResult ? "true" : "false");
-    out += ",\"lastEvalMs\":" + std::to_string(rt.lastEvalMs);
-    out += ",\"lastFireMs\":" + std::to_string(rt.lastFireMs);
-    out += ",\"lastError\":\"" + jsonEscape(rt.lastError) + "\"";
-    out += ",\"resolvedArgs\":" + stringVectorToJson(rt.resolvedArgs);
-    out += "}";
-    return out;
+inline json nodeFullToJson(const RuleNode* node)
+{
+    json j;
+
+    j["title"] = node->title();
+    j["condition"] = node->condition();
+
+    j["args"] = json::array();
+    for (const auto& a : node->args())
+        j["args"].push_back(a);
+
+    j["runtime"] = runtimeToJson(node->runtime());
+
+    j["actions"] = json::array();
+    for (const auto& a : node->actions())
+        j["actions"].push_back(actionToJson(a));
+
+    j["children"] = json::array();
+    for (const auto& ch : node->children())
+        j["children"].push_back(nodeFullToJson(ch.get()));
+
+    return j;
 }
 
 // ------------------------------------------------------------
-// one node -> full JSON
+// Tree -> json
 // ------------------------------------------------------------
-inline std::string nodeToJson(const RuleNode& node) {
-    std::string out = "{";
+inline json treeStructureToJson(const RuleTree& tree)
+{
+    json j;
 
-    out += "\"title\":\"" + jsonEscape(node.title()) + "\"";
-    out += ",\"condition\":\"" + jsonEscape(node.condition()) + "\"";
-    out += ",\"args\":" + stringVectorToJson(node.args());
-    out += ",\"runtime\":" + runtimeToJson(node.runtime());
-    out += ",\"actions\":" + actionsToJson(node.actions());
+    if (!tree.root())
+        return j;
 
-    out += ",\"children\":[";
-    bool first = true;
-    for (const auto& ch : node.children()) {
-        if (!first) out += ",";
-        first = false;
-        out += nodeToJson(*ch);
-    }
-    out += "]";
+    j["root"] = nodeStructureToJson(tree.root());
 
-    out += "}";
-    return out;
+    return j;
 }
 
-// ------------------------------------------------------------
-// tree -> full JSON
-// ------------------------------------------------------------
-inline std::string treeToJson(const RuleTree& tree) {
-    auto* root = tree.root();
-    if (!root) {
-        return "{\"root\":null}";
-    }
+inline json treeRuntimeToJson(const RuleTree& tree)
+{
+    json j;
 
-    return std::string("{\"root\":") + nodeToJson(*root) + "}";
+    if (!tree.root())
+        return j;
+
+    j["root"] = nodeRuntimeToJson(tree.root());
+
+    return j;
 }
 
-// ------------------------------------------------------------
-// runtime-only node JSON
-// ------------------------------------------------------------
-inline std::string nodeRuntimeToJson(const RuleNode& node) {
-    std::string out = "{";
+inline json treeToJson(const RuleTree& tree)
+{
+    json j;
 
-    out += "\"title\":\"" + jsonEscape(node.title()) + "\"";
-    out += ",\"runtime\":" + runtimeToJson(node.runtime());
+    if (!tree.root())
+        return j;
 
-    out += ",\"children\":[";
-    bool first = true;
-    for (const auto& ch : node.children()) {
-        if (!first) out += ",";
-        first = false;
-        out += nodeRuntimeToJson(*ch);
-    }
-    out += "]";
+    j["root"] = nodeFullToJson(tree.root());
 
-    out += "}";
-
-    return out;
-}
-
-// ------------------------------------------------------------
-// tree runtime JSON
-// ------------------------------------------------------------
-inline std::string treeRuntimeToJson(const RuleTree& tree) {
-    auto* root = tree.root();
-    if (!root) {
-        return "{\"root\":null}";
-    }
-
-    return std::string("{\"root\":") + nodeRuntimeToJson(*root) + "}";
-}
-
-// ------------------------------------------------------------
-// structure-only node JSON
-// ------------------------------------------------------------
-inline std::string nodeStructureToJson(const RuleNode& node) {
-    std::string out = "{";
-
-    out += "\"title\":\"" + jsonEscape(node.title()) + "\"";
-    out += ",\"condition\":\"" + jsonEscape(node.condition()) + "\"";
-    out += ",\"args\":" + stringVectorToJson(node.args());
-    out += ",\"actions\":" + actionsToJson(node.actions());
-
-    out += ",\"children\":[";
-    bool first = true;
-    for (const auto& ch : node.children()) {
-        if (!first) out += ",";
-        first = false;
-        out += nodeStructureToJson(*ch);
-    }
-    out += "]";
-
-    out += "}";
-
-    return out;
-}
-
-// ------------------------------------------------------------
-// tree structure JSON
-// ------------------------------------------------------------
-inline std::string treeStructureToJson(const RuleTree& tree) {
-    auto* root = tree.root();
-    if (!root) {
-        return "{\"root\":null}";
-    }
-
-    return std::string("{\"root\":") + nodeStructureToJson(*root) + "}";
+    return j;
 }
 
 } // namespace logic
