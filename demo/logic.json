@@ -1,40 +1,87 @@
 {
   "root": {
-    "title": "blink",
-    "condition": "always",
-    "args": [],
     "actions": [],
+    "args": [],
     "children": [
       {
-        "title": "blink_on",
-        "condition": "mod_part",
-        "args": ["time", "200", "2", "0"],
         "actions": [
           {
+            "enabled": true,
             "target": "LOW_DCM_D_0",
-            "valueType": "bool",
-            "value": "true",
             "trigger": "while_true",
-            "enabled": true
+            "value": "true",
+            "valueType": "bool"
           }
         ],
-        "children": []
+        "args": [
+          "time",
+          "50000",
+          "2",
+          "0"
+        ],
+        "children": [],
+        "condition": "mod_part",
+        "runtime": {
+          "effectiveResult": false,
+          "lastError": "",
+          "lastEvalMs": 5061062,
+          "lastFireMs": 5056755,
+          "localResult": false,
+          "prevEffectiveResult": false,
+          "resolvedArgs": [
+            "1773706569307",
+            "50000",
+            "2",
+            "0"
+          ]
+        },
+        "title": "blink_on"
       },
       {
-        "title": "blink_off",
-        "condition": "mod_part",
-        "args": ["time", "200", "2", "1"],
         "actions": [
           {
+            "enabled": true,
             "target": "LOW_DCM_D_0",
-            "valueType": "bool",
-            "value": "false",
             "trigger": "while_true",
-            "enabled": true
+            "value": "false",
+            "valueType": "bool"
           }
         ],
-        "children": []
+        "args": [
+          "time",
+          "50000",
+          "2",
+          "1"
+        ],
+        "children": [],
+        "condition": "mod_part",
+        "runtime": {
+          "effectiveResult": true,
+          "lastError": "",
+          "lastEvalMs": 5061062,
+          "lastFireMs": 5061063,
+          "localResult": true,
+          "prevEffectiveResult": true,
+          "resolvedArgs": [
+            "1773706569307",
+            "50000",
+            "2",
+            "1"
+          ]
+        },
+        "title": "blink_off"
       }
-    ]
+    ],
+    "condition": "always",
+    "runtime": {
+      "effectiveResult": true,
+      "lastError": "",
+      "lastEvalMs": 5061062,
+      "lastFireMs": 0,
+      "localResult": true,
+      "prevEffectiveResult": true,
+      "resolvedArgs": []
+    },
+    "title": "blink"
   }
 }

@@ -5,11 +5,15 @@ const apiBase = location.origin;
 $("apiBase").textContent = apiBase;
 
 let timer = null;
+let currentPage = "dashboard";
 
 const historyMap = {};
 const selectedGetters = new Set(["temp"]);
 const MAX_POINTS = 120;
 
+// ------------------------------------------------------------
+// Generic helpers
+// ------------------------------------------------------------
 function setDot(ok) {
   dot.style.background = ok ? "#49f28a" : "#ff6b6b";
   dot.style.boxShadow = ok
@@ -47,19 +51,6 @@ function badgeMode(mode) {
   return `<span class="pill ${cls}">${m}</span>`;
 }
 
-function renderItem({ title, meta, right, sub }) {
-  return `
-    <div class="item">
-      <div class="left">
-        <div class="k">${title}</div>
-        <div class="meta">${meta || ""}</div>
-        ${sub ? `<div class="small muted mono">${sub}</div>` : ""}
-      </div>
-      <div class="right">${right || ""}</div>
-    </div>
-  `;
-}
-
 async function jget(path) {
   const r = await fetch(path, { cache: "no-store" });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
@@ -72,9 +63,11 @@ async function jpost(path, body = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+
   const text = await r.text();
   let data = {};
   try { data = JSON.parse(text); } catch {}
+
   if (!r.ok) throw new Error(data?.error || `${path} -> ${r.status}`);
   return data;
 }
@@ -85,6 +78,40 @@ function matchesSearch(s, key) {
   return String(key).toLowerCase().includes(q);
 }
 
+function safeUpper(v) {
+  return String(v || "").toUpperCase();
+}
+
+function effectiveMode(executor) {
+  const dm = executor?.desired?.mode;
+  const am = executor?.actual?.mode;
+  return dm || am || executor?.mode || "";
+}
+
+function setPage(page) {
+  currentPage = page;
+
+  const dashboardPage = $("dashboardPage");
+  const logicPage = $("logicPage");
+
+  if (dashboardPage) {
+    dashboardPage.style.display = page === "dashboard" ? "" : "none";
+  }
+  if (logicPage) {
+    logicPage.style.display = page === "logic" ? "" : "none";
+  }
+}
+
+function setLogicStatus(text, cls = "muted") {
+  const el = $("logicStatus");
+  if (!el) return;
+  el.className = `pill ${cls}`;
+  el.textContent = text;
+}
+
+// ------------------------------------------------------------
+// Dashboard logic
+// ------------------------------------------------------------
 async function execCmd(name, action, value = "") {
   try {
     await jpost(`/api/executors/${encodeURIComponent(name)}/${action}`, { value });
@@ -120,16 +147,6 @@ function formatAnyData(data) {
   }
 
   return `${data.type}:${String(data.value)}`;
-}
-
-function safeUpper(v) {
-  return String(v || "").toUpperCase();
-}
-
-function effectiveMode(executor) {
-  const dm = executor?.desired?.mode;
-  const am = executor?.actual?.mode;
-  return dm || am || executor?.mode || "";
 }
 
 function historyPush(getterKey, value) {
@@ -612,8 +629,144 @@ function renderExecutorDataBlock(label, block) {
   `;
 }
 
+// ------------------------------------------------------------
+// Logic page in same app
+// ------------------------------------------------------------
+function logicPill(text, cls = "muted") {
+  return `<span class="pill ${cls}">${text}</span>`;
+}
+
+function renderLogicAction(a) {
+  return `
+    <div class="small mono muted">
+      action → target:${a.target}, type:${a.valueType}, value:${a.value}, trigger:${a.trigger}, enabled:${a.enabled}
+    </div>
+  `;
+}
+
+function renderLogicNode(node) {
+  if (!node) return "";
+
+  const rt = node.runtime || {};
+  const active = !!rt.effectiveResult;
+  const cls = active ? "active" : "inactive";
+
+  const meta = [
+    logicPill(`condition:${node.condition || "—"}`),
+    logicPill(`local:${rt.localResult ? "true" : "false"}`, rt.localResult ? "good" : "bad"),
+    logicPill(`effective:${rt.effectiveResult ? "true" : "false"}`, rt.effectiveResult ? "good" : "bad"),
+    logicPill(`prev:${rt.prevEffectiveResult ? "true" : "false"}`),
+    logicPill(`eval:${fmtMs(rt.lastEvalMs)}`),
+    logicPill(`fire:${fmtMs(rt.lastFireMs)}`)
+  ].join(" ");
+
+  const args = (node.args || []).length
+    ? `<div class="logic-section small mono">args: ${JSON.stringify(node.args)}</div>`
+    : `<div class="logic-section small mono muted">args: []</div>`;
+
+  const resolvedArgs = (rt.resolvedArgs || []).length
+    ? `<div class="logic-section small mono">resolved: ${JSON.stringify(rt.resolvedArgs)}</div>`
+    : `<div class="logic-section small mono muted">resolved: []</div>`;
+
+  const actions = (node.actions || []).length
+    ? `<div class="logic-section">${node.actions.map(renderLogicAction).join("")}</div>`
+    : `<div class="logic-section small mono muted">actions: []</div>`;
+
+  const err = rt.lastError
+    ? `<div class="logic-section small mono bad">error: ${rt.lastError}</div>`
+    : "";
+
+  const children = (node.children || []).length
+    ? `<div class="logic-children">${node.children.map(renderLogicNode).join("")}</div>`
+    : "";
+
+  return `
+    <div class="logic-node ${cls}">
+      <div class="logic-title">${node.title || "unnamed"}</div>
+      <div class="logic-meta">${meta}</div>
+      ${args}
+      ${resolvedArgs}
+      ${actions}
+      ${err}
+      ${children}
+    </div>
+  `;
+}
+
+function countLogicNodes(node) {
+  if (!node) return 0;
+  let total = 1;
+  for (const ch of (node.children || [])) {
+    total += countLogicNodes(ch);
+  }
+  return total;
+}
+
+async function reloadLogicView() {
+  try {
+    const logicFull = await jget("/api/json/logic/full");
+    const root = logicFull?.root || null;
+
+    $("logicCount").textContent = String(countLogicNodes(root));
+    $("logicTree").innerHTML = root
+      ? renderLogicNode(root)
+      : `<div class="small muted">Нет logic tree</div>`;
+
+    $("logicRawJson").textContent = JSON.stringify(logicFull, null, 2);
+  } catch (e) {
+    $("logicTree").innerHTML =
+      `<div class="small bad">Ошибка logic: ${String(e.message || e)}</div>`;
+    $("logicRawJson").textContent = String(e.message || e);
+  }
+}
+
+async function loadLogicIntoEditor() {
+  try {
+    setLogicStatus("loading", "warn");
+    const logicFull = await jget("/api/json/logic/full");
+    $("logicEditor").value = JSON.stringify(logicFull, null, 2);
+    setLogicStatus("loaded", "good");
+  } catch (e) {
+    setLogicStatus("load error", "bad");
+    alert(`Load logic failed: ${String(e.message || e)}`);
+  }
+}
+
+async function uploadLogicFromEditor() {
+  try {
+    setLogicStatus("uploading", "warn");
+    const raw = $("logicEditor").value;
+    const body = JSON.parse(raw);
+
+    await jpost("/api/json/logic/upload", body);
+
+    setLogicStatus("uploaded", "good");
+    await reloadLogicView();
+  } catch (e) {
+    setLogicStatus("upload error", "bad");
+    alert(`Upload logic failed: ${String(e.message || e)}`);
+  }
+}
+
+async function reloadLogicFromFile() {
+  try {
+    setLogicStatus("reloading", "warn");
+    await jpost("/api/json/logic/reload", {});
+    setLogicStatus("reloaded", "good");
+    await reloadLogicView();
+    await loadLogicIntoEditor();
+  } catch (e) {
+    setLogicStatus("reload error", "bad");
+    alert(`Reload logic failed: ${String(e.message || e)}`);
+  }
+}
+
+// ------------------------------------------------------------
+// Main reload
+// ------------------------------------------------------------
 async function reloadAll() {
-  const s = $("search").value;
+  const searchEl = $("search");
+  const s = searchEl ? searchEl.value : "";
 
   try {
     const [status, schemaG, schemaE, getters, executors] = await Promise.all([
@@ -745,12 +898,32 @@ async function reloadAll() {
       .join("");
 
     $("executors").innerHTML = eHtml || `<div class="small muted">Нет данных</div>`;
+
+    if (currentPage === "logic") {
+      await reloadLogicView();
+    }
   } catch (e) {
     setDot(false);
-    $("getters").innerHTML =
-      `<div class="small bad">Ошибка загрузки: ${String(e.message || e)}</div>`;
-    $("executors").innerHTML =
-      `<div class="small bad">Ошибка загрузки: ${String(e.message || e)}</div>`;
+
+    if ($("getters")) {
+      $("getters").innerHTML =
+        `<div class="small bad">Ошибка загрузки: ${String(e.message || e)}</div>`;
+    }
+
+    if ($("executors")) {
+      $("executors").innerHTML =
+        `<div class="small bad">Ошибка загрузки: ${String(e.message || e)}</div>`;
+    }
+
+    if (currentPage === "logic") {
+      if ($("logicTree")) {
+        $("logicTree").innerHTML =
+          `<div class="small bad">Ошибка logic: ${String(e.message || e)}</div>`;
+      }
+      if ($("logicRawJson")) {
+        $("logicRawJson").textContent = String(e.message || e);
+      }
+    }
   }
 }
 
@@ -760,11 +933,33 @@ function setIntervalRefresh(ms) {
   if (ms > 0) timer = setInterval(reloadAll, ms);
 }
 
+// ------------------------------------------------------------
+// Bindings
+// ------------------------------------------------------------
 $("btnReload").addEventListener("click", reloadAll);
+
 $("refresh").addEventListener("change", (e) => {
   setIntervalRefresh(parseInt(e.target.value, 10));
 });
+
 $("search").addEventListener("input", () => reloadAll());
 
+$("tabDashboard").addEventListener("click", () => {
+  setPage("dashboard");
+});
+
+$("tabLogic").addEventListener("click", async () => {
+  setPage("logic");
+  await reloadLogicView();
+});
+
+$("btnLogicLoadIntoEditor").addEventListener("click", loadLogicIntoEditor);
+$("btnLogicReloadFile").addEventListener("click", reloadLogicFromFile);
+$("btnLogicUpload").addEventListener("click", uploadLogicFromEditor);
+
+// ------------------------------------------------------------
+// Init
+// ------------------------------------------------------------
+setPage("dashboard");
 reloadAll();
 setIntervalRefresh(parseInt($("refresh").value, 10));

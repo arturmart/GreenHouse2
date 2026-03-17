@@ -126,6 +126,19 @@ private:
     void applyAction(const ActionModel& action) {
         const int id = gs_.execIdByName(action.target);
 
+        // --------------------------------------------------------
+        // IMPORTANT:
+        // If executor is in MANUAL mode, logic must not overwrite it.
+        // --------------------------------------------------------
+        {
+            const auto actual = gs_.getExecActualEntry(id);
+            const auto desired = gs_.getExecDesiredEntry(id);
+
+            if (actual.mode == GH_MODE::MANUAL || desired.mode == GH_MODE::MANUAL) {
+                return;
+            }
+        }
+
         switch (action.valueType) {
             case ActionValueType::BOOL: {
                 const bool v = parseBool(action.value);

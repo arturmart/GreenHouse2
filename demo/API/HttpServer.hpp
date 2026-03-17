@@ -14,6 +14,7 @@
 #include "../GlobalState.hpp"
 #include "../Tools/DateTime.hpp"
 #include "JsonAPI.hpp"
+#include <nlohmann/json.hpp>
 
 namespace asio  = boost::asio;
 namespace beast = boost::beast;
@@ -376,11 +377,19 @@ handle_request(http::request<http::string_body>&& req,
 
         try {
             if (method == http::verb::get) {
-                return make_json(req, http::status::ok, jsonApi->get(name));
+                nlohmann::json result = jsonApi->get(name);
+                return make_json(req, http::status::ok, result.dump());
             }
 
             if (method == http::verb::post) {
-                return make_json(req, http::status::ok, jsonApi->set(name, req.body()));
+                nlohmann::json body = nlohmann::json::object();
+
+                if (!req.body().empty()) {
+                    body = nlohmann::json::parse(req.body());
+                }
+
+                nlohmann::json result = jsonApi->set(name, body);
+                return make_json(req, http::status::ok, result.dump());
             }
 
             return make_json(req, http::status::method_not_allowed,

@@ -8,7 +8,6 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
-#include <fstream>
 
 #include <nlohmann/json.hpp>
 
@@ -28,11 +27,10 @@
 #include "Executor/EX_DeviceControlModule.hpp"
 #include "Executor/ExecutorStateBridge.hpp"
 
-#include "Logic/ActionModel.hpp"
-#include "Logic/RuleNode.hpp"
 #include "Logic/RuleTree.hpp"
 #include "Logic/RuleEngine.hpp"
-#include "API/JsonAPI.hpp"          // если у тебя файл называется JsonApi.hpp -> поменяй include
+#include "Logic/LogicJsonController.hpp"
+#include "API/JsonAPI.hpp"   // если у тебя файл называется JsonApi.hpp -> поменяй include
 #include "Logic/LogicDebugJson.hpp"
 
 // ------------------------------------------------------------
@@ -54,187 +52,8 @@ private:
     std::string key_;
 };
 
-// ------------------------------------------------------------
-// Desired executor field
-// ------------------------------------------------------------
-template<typename T>
-struct ExecDesiredField {
-    explicit ExecDesiredField(std::string execName,
-                              GH_MODE mode = GH_MODE::AUTO,
-                              std::string writer = "unknown")
-        : execName_(std::move(execName)),
-          mode_(mode),
-          writer_(std::move(writer)) {}
-
-    void set(const T& v) {
-        auto& gs = GH_GlobalState::instance();
-        const int id = gs.execIdByName(execName_);
-
-        if constexpr (std::is_same_v<T, float>) {
-            gs.setExecDesired(id, static_cast<double>(v), mode_, writer_, true);
-        } else {
-            gs.setExecDesired(id, v, mode_, writer_, true);
-        }
-    }
-
-    void invalidate() {
-        auto& gs = GH_GlobalState::instance();
-        const int id = gs.execIdByName(execName_);
-        gs.setExecDesiredInvalid(id, writer_, true);
-    }
-
-private:
-    std::string execName_;
-    GH_MODE mode_;
-    std::string writer_;
-};
-
-// ------------------------------------------------------------
-// Actual executor field
-// ------------------------------------------------------------
-template<typename T>
-struct ExecActualField {
-    explicit ExecActualField(std::string execName,
-                             GH_MODE mode = GH_MODE::AUTO)
-        : execName_(std::move(execName)),
-          mode_(mode) {}
-
-    void set(const T& v) {
-        auto& gs = GH_GlobalState::instance();
-        const int id = gs.execIdByName(execName_);
-
-        if constexpr (std::is_same_v<T, float>) {
-            gs.setExecActual(id, static_cast<double>(v), mode_, false);
-        } else {
-            gs.setExecActual(id, v, mode_, false);
-        }
-    }
-
-    void invalidate(const std::string& err = {}) {
-        auto& gs = GH_GlobalState::instance();
-        const int id = gs.execIdByName(execName_);
-        gs.setExecActualInvalid(id, err);
-    }
-
-private:
-    std::string execName_;
-    GH_MODE mode_;
-};
-
 static volatile std::sig_atomic_t g_run = 1;
 static void onSigInt(int) { g_run = 0; }
-
-// ------------------------------------------------------------
-// Logic JSON helpers
-// ------------------------------------------------------------
-using json = nlohmann::json;
-
-static logic::TriggerMode parseTriggerMode(const std::string& s) {
-    if (s == "on_enter")   return logic::TriggerMode::ON_ENTER;
-    if (s == "on_exit")    return logic::TriggerMode::ON_EXIT;
-    if (s == "while_true") return logic::TriggerMode::WHILE_TRUE;
-    if (s == "while_false")return logic::TriggerMode::WHILE_FALSE;
-    throw std::runtime_error("Unknown trigger mode: " + s);
-}
-
-static logic::ActionValueType parseActionValueType(const std::string& s) {
-    if (s == "bool")   return logic::ActionValueType::BOOL;
-    if (s == "int")    return logic::ActionValueType::INT;
-    if (s == "double") return logic::ActionValueType::DOUBLE;
-    if (s == "string") return logic::ActionValueType::STRING;
-    throw std::runtime_error("Unknown action value type: " + s);
-}
-
-static std::vector<std::string> parseStringArray(const json& j, const char* key) {
-    std::vector<std::string> out;
-
-    if (!j.contains(key)) {
-        return out;
-    }
-
-    if (!j.at(key).is_array()) {
-        throw std::runtime_error(std::string("Field '") + key + "' must be array");
-    }
-
-    for (const auto& v : j.at(key)) {
-        if (!v.is_string()) {
-            throw std::runtime_error(std::string("Field '") + key + "' must contain strings");
-        }
-        out.push_back(v.get<std::string>());
-    }
-
-    return out;
-}
-
-static std::vector<logic::ActionModel> parseActions(const json& j) {
-    std::vector<logic::ActionModel> actions;
-
-    if (!j.contains("actions")) {
-        return actions;
-    }
-
-    if (!j.at("actions").is_array()) {
-        throw std::runtime_error("Field 'actions' must be array");
-    }
-
-    for (const auto& a : j.at("actions")) {
-        logic::ActionModel action;
-
-        action.target = a.at("target").get<std::string>();
-        action.valueType = parseActionValueType(a.at("valueType").get<std::string>());
-        action.value = a.at("value").get<std::string>();
-        action.trigger = parseTriggerMode(a.value("trigger", "on_enter"));
-        action.enabled = a.value("enabled", true);
-
-        actions.push_back(std::move(action));
-    }
-
-    return actions;
-}
-
-static std::unique_ptr<logic::RuleNode> parseRuleNode(const json& j) {
-    const std::string title = j.value("title", "unnamed");
-    const std::string condition = j.value("condition", "always");
-    const auto args = parseStringArray(j, "args");
-    const auto actions = parseActions(j);
-
-    auto node = std::make_unique<logic::RuleNode>(
-        title,
-        condition,
-        args,
-        actions
-    );
-
-    if (j.contains("children")) {
-        if (!j.at("children").is_array()) {
-            throw std::runtime_error("Field 'children' must be array");
-        }
-
-        for (const auto& ch : j.at("children")) {
-            node->addChild(parseRuleNode(ch));
-        }
-    }
-
-    return node;
-}
-
-static logic::RuleTree loadLogicTreeFromFile(const std::string& path) {
-    std::ifstream in(path);
-    if (!in.is_open()) {
-        throw std::runtime_error("Failed to open logic file: " + path);
-    }
-
-    json j;
-    in >> j;
-
-    if (!j.contains("root")) {
-        throw std::runtime_error("Logic file must contain 'root'");
-    }
-
-    logic::RuleTree tree;
-    tree.setRoot(parseRuleNode(j.at("root")));
-    return tree;
-}
 
 int main() {
     std::signal(SIGINT, onSigInt);
@@ -260,9 +79,6 @@ int main() {
     std::vector<std::unique_ptr<Field<std::string>>> getterFieldsString;
     std::vector<std::unique_ptr<Field<tools::UnixMs>>> getterFieldsTime;
 
-    // ------------------------------------------------------------
-    // Create getter strategies from config
-    // ------------------------------------------------------------
     try {
         for (const auto& kv : cfg.getterBindings()) {
             const std::string& getterKey = kv.first;
@@ -438,7 +254,7 @@ int main() {
     }
 
     // ------------------------------------------------------------
-    // Manual DataGetter strategies (without Configurator)
+    // Manual DataGetter strategies
     // ------------------------------------------------------------
     {
         auto& strat = dg.emplace<dg::DG_TIME>("dg_time");
@@ -476,19 +292,19 @@ int main() {
     control::ExecutorStateBridge execBridge(gs, executor);
 
     // ------------------------------------------------------------
-    // LogicEngine from file: logic.json
+    // Logic
     // ------------------------------------------------------------
     logic::RuleTree logicTree;
+    logic::RuleEngine logicEngine(gs, logicTree);
+    logic::LogicJsonController logicJson(logicTree, logicEngine, "logic.json");
 
     try {
-        logicTree = loadLogicTreeFromFile("logic.json");
+        logicJson.loadFromFile();
         std::cout << "[LOGIC] loaded logic.json successfully\n";
     } catch (const std::exception& ex) {
         std::cerr << "[LOGIC] failed to load logic.json: " << ex.what() << "\n";
         return 1;
     }
-
-    logic::RuleEngine logicEngine(gs, logicTree);
 
     // ------------------------------------------------------------
     // Generic JSON API
@@ -496,15 +312,23 @@ int main() {
     api::JsonApi jsonApi;
 
     jsonApi.registerGetter("logic/tree", [&]() {
-        return logic::treeStructureToJson(logicTree);
+        return logicJson.getTreeJson();
     });
 
     jsonApi.registerGetter("logic/runtime", [&]() {
-        return logic::treeRuntimeToJson(logicTree);
+        return logicJson.getRuntimeJson();
     });
 
     jsonApi.registerGetter("logic/full", [&]() {
-        return logic::treeToJson(logicTree);
+        return logicJson.getFullJson();
+    });
+
+    jsonApi.registerSetter("logic/upload", [&](const nlohmann::json& body) {
+        return logicJson.apiUpload(body);
+    });
+
+    jsonApi.registerSetter("logic/reload", [&](const nlohmann::json& body) {
+        return logicJson.apiReload(body);
     });
 
     // ------------------------------------------------------------
@@ -518,7 +342,6 @@ int main() {
 
     // ------------------------------------------------------------
     // HTTP command handler
-    // API now writes DESIRED state only.
     // ------------------------------------------------------------
     auto commandHandler =
         [&](const std::string& name,
@@ -532,11 +355,9 @@ int main() {
 
                 if (value == "manual" || value == "MANUAL" || value == "0") {
                     m = GH_MODE::MANUAL;
-                }
-                else if (value == "auto" || value == "AUTO" || value == "1") {
+                } else if (value == "auto" || value == "AUTO" || value == "1") {
                     m = GH_MODE::AUTO;
-                }
-                else {
+                } else {
                     throw std::runtime_error("mode must be manual/auto");
                 }
 
@@ -545,13 +366,13 @@ int main() {
                 // actual mode switches immediately
                 gs.setExecActualMode(id, m);
 
-                // IMPORTANT: when returning to AUTO force rule refresh
                 if (m == GH_MODE::AUTO) {
+                    std::lock_guard<std::mutex> lock(logicJson.mutex());
                     logicEngine.requestRefresh();
                 }
 
                 return std::string("{\"ok\":true,\"name\":\"") + name +
-                    "\",\"action\":\"mode\",\"value\":\"" + toString(m) + "\"}";
+                       "\",\"action\":\"mode\",\"value\":\"" + toString(m) + "\"}";
             }
 
             auto actual = gs.getExecActualEntry(id);
@@ -622,6 +443,7 @@ int main() {
 
     sch.addPeriodic([&]() {
         try {
+            std::lock_guard<std::mutex> lock(logicJson.mutex());
             logicEngine.tick();
         } catch (const std::exception& ex) {
             std::cout << "[LOGIC] tick error: " << ex.what() << "\n";
@@ -668,7 +490,7 @@ int main() {
     }, Scheduler::Ms(0), "HTTP ioc.run()");
 
     std::cout << "HTTP server on http://localhost:8080\n";
-    std::cout << "Logic file: logic.json\n";
+    std::cout << "Logic file: " << logicJson.filePath() << "\n";
     std::cout << "Running. Ctrl+C to stop.\n";
 
     while (g_run) {
